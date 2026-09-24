@@ -189,6 +189,7 @@ async function handleAuthState(user){
 }
 
 function initApp(){
+  updateRoleBasedUI();
   buildCategoryPicker();
   buildLibraryCategories();
   buildForm();
@@ -220,11 +221,30 @@ async function logout(){
 
 function updateCount(){document.getElementById("recordCount").textContent = `${plants.length} รายการ`;}
 
+function isAdminUser(){
+  return currentUserProfile?.role === "admin";
+}
+
+function updateRoleBasedUI(){
+  const admin = isAdminUser();
+  document.querySelector('[data-page="entry"]')?.classList.toggle("hidden", !admin);
+  document.querySelector('[data-page="export"]')?.classList.remove("hidden");
+  document.getElementById("libraryAddButton")?.classList.toggle("hidden", !admin);
+}
+
 function showPage(page){
+  if(page === "entry" && !isAdminUser()){
+    toast("เฉพาะ Admin เท่านั้นที่สามารถเพิ่มหรือแก้ไขข้อมูลได้");
+    return;
+  }
   document.querySelectorAll(".page").forEach(p=>p.classList.remove("active-page"));
   document.getElementById(`page-${page}`).classList.add("active-page");
   document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.page===page));
-  if(page==="library"){buildLibraryCategories(); closeLibraryCategory();}
+  if(page==="library"){
+    buildLibraryCategories();
+    initLibrarySearchUI();
+    renderPlantList();
+  }
   if(page==="export") buildExportTree();
   window.scrollTo({top:0,behavior:"smooth"});
 }
@@ -242,184 +262,143 @@ function buildLibraryCategories(){
   const wrap=document.getElementById("libraryCategories");
   wrap.innerHTML=CATEGORIES.map(c=>{
     const count=plants.filter(p=>p.categoryCode===c.code).length;
-    return `<button class="category-card" onclick="openLibraryCategory('${c.code}')">
+    return `<button class="category-card" onclick="setLibraryCategoryFilter('${c.code}')">
       <span class="code">${c.code}</span><div class="cat-icon">${c.icon}</div>
-      <h3>${c.name}</h3><p>${count} รายการ • คลิกเพื่อดูคลัง</p>
+      <h3>${c.name}</h3><p>${count} รายการ • ใช้เป็นตัวกรอง</p>
     </button>`;
   }).join("");
-}
 
-function buildForm(data={}){
-  const form=document.getElementById("plantForm");
-  form.innerHTML=FIELDS.map(([section, fields])=>`
-    <div class="form-section">
-      <div class="form-section-title">${section}</div>
-      <div class="fields">
-        ${fields.map(([key,label,type])=>renderField(key,label,type,data[key] ?? "")).join("")}
-      </div>
-    </div>`).join("");
-}
-
-function renderField(key,label,type,value){
-  const req=`<span class="req">*</span>`;
-  if(type==="textarea") return `<div class="field full"><label>${label}${req}</label><textarea id="f-${key}" required>${esc(value)}</textarea></div>`;
-  if(type==="select"){
-    let opts=[];
-    if(key==="growthType") opts=CATEGORIES.map(c=>c.name);
-    if(key==="space") opts=["เล็ก","เล็ก–กลาง","ปานกลาง","ใหญ่"];
-    if(key==="careLevel") opts=["ง่าย","ปานกลาง","ยาก"];
-    if(key==="lightLevel") opts=["น้อย","ปานกลาง","มาก"];
-    if(key==="waterLevel") opts=["น้อย","ปานกลาง","มาก"];
-    return `<div class="field"><label>${label}${req}</label><select id="f-${key}" required><option value="">เลือก...</option>${opts.map(o=>`<option ${o===value?"selected":""}>${o}</option>`).join("")}</select></div>`;
+  const select=document.getElementById("libraryCategoryFilter");
+  if(select){
+    const current=select.value;
+    select.innerHTML=`<option value="">ทุกประเภท</option>`+CATEGORIES.map(c=>`<option value="${c.code}">${c.icon} ${c.name}</option>`).join("");
+    select.value=current;
   }
-  if(type==="choice"){
-    return `<div class="field"><label>${label}${req}</label><div class="choice-row">
-      ${["ใช่","ไม่ใช่"].map(o=>`<label class="choice"><input type="radio" name="${key}" value="${o}" ${value===o?"checked":""} required><span>${o}</span></label>`).join("")}
-    </div></div>`;
-  }
-  return `<div class="field"><label>${label}${req}</label><input id="f-${key}" value="${esc(value)}" required></div>`;
 }
 
-async function startNew(code){
-  selectedCategory=CATEGORIES.find(c=>c.code===code);
-  editingId=null;
-  document.getElementById("formWrap").classList.remove("hidden");
-  document.getElementById("categoryPicker").classList.add("hidden");
-  document.getElementById("formTitle").textContent="กรอกข้อมูลพันธุ์ไม้";
-  document.getElementById("selectedCategoryName").textContent=selectedCategory.name;
-  document.getElementById("nextId").textContent="กำลังตรวจสอบ...";
-  buildForm({growthType:selectedCategory.name});
-  try{
-    const id=await peekNextId(code);
-    if(!editingId && selectedCategory?.code===code) document.getElementById("nextId").textContent=id;
-  }catch(err){
-    console.error(err);
-    document.getElementById("nextId").textContent="รอการบันทึก";
-    toast("ยังตรวจสอบ ID ไม่ได้ กรุณาตรวจสอบ Firestore Rules");
-  }
-  window.scrollTo({top:0,behavior:"smooth"});
-}
-
-async function peekNextId(code){
-  const snap=await db.collection("counters").doc(code).get();
-  const n=(snap.exists?(snap.data().last||0):0)+1;
-  return `${code}${String(n).padStart(2,"0")}`;
-}
-
-async function nextId(code){
-  const ref=db.collection("counters").doc(code);
-  return db.runTransaction(async tx=>{
-    const snap=await tx.get(ref);
-    const n=(snap.exists?(snap.data().last||0):0)+1;
-    tx.set(ref,{last:n},{merge:true});
-    return `${code}${String(n).padStart(2,"0")}`;
-  });
-}
-
-function backToCategories(){
-  document.getElementById("formWrap").classList.add("hidden");
-  document.getElementById("categoryPicker").classList.remove("hidden");
-  selectedCategory=null; editingId=null;
-  window.scrollTo({top:0,behavior:"smooth"});
-}
-
-async function savePlant(){
-  if(!currentUserProfile){toast("กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล");return;}
-  const form=document.getElementById("plantForm");
-  const required=form.querySelectorAll("[required]");
-  let valid=true, first=null;
-  required.forEach(el=>{
-    if(el.type==="radio"){
-      const checked=form.querySelector(`input[name="${el.name}"]:checked`);
-      if(!checked){valid=false; first=first||el}
-    } else if(!el.value.trim()){valid=false; first=first||el}
-  });
-  if(!valid){toast("กรุณากรอกข้อมูลให้ครบทุกช่องที่มี *"); first?.scrollIntoView({behavior:"smooth",block:"center"}); return;}
-
-  const record=collectForm();
-  const now=firebase.firestore.FieldValue.serverTimestamp();
-
-  try{
-    if(editingId){
-      const existing=plants.find(p=>p.id===editingId);
-      if(!existing) throw new Error("ไม่พบข้อมูลที่ต้องการแก้ไข");
-      record.id=editingId;
-      record.categoryCode=existing.categoryCode;
-      record.createdAt=existing.createdAt;
-      record.createdBy=existing.createdBy;
-      record.createdByEmail=existing.createdByEmail;
-      record.createdByName=existing.createdByName;
-      record.updatedAt=now;
-      record.updatedBy=currentUserProfile.uid;
-      record.updatedByEmail=currentUserProfile.email||auth.currentUser.email;
-      record.updatedByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser.email;
-      await db.collection("plants").doc(existing.docId||existing.id).set(record,{merge:true});
-      await logActivity("update",record);
-      toast("แก้ไขข้อมูลเรียบร้อยแล้ว");
-    }else{
-      const id=await nextId(selectedCategory.code);
-      record.id=id;
-      record.categoryCode=selectedCategory.code;
-      record.createdAt=now;
-      record.updatedAt=now;
-      record.createdBy=currentUserProfile.uid;
-      record.createdByEmail=currentUserProfile.email||auth.currentUser.email;
-      record.createdByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser.email;
-      record.updatedBy=currentUserProfile.uid;
-      record.updatedByEmail=record.createdByEmail;
-      record.updatedByName=record.createdByName;
-      await db.collection("plants").add(record);
-      await logActivity("create",record);
-      toast(`บันทึก ${record.id} เรียบร้อยแล้ว`);
+function initLibrarySearchUI(){
+  const ids=[
+    "librarySearch","libraryCategoryFilter","libraryCareFilter","libraryLightFilter",
+    "libraryWaterFilter","librarySpaceFilter","libraryBeginnerFilter","libraryPetFilter",
+    "libraryBusyFilter","libraryLimitedFilter","librarySort"
+  ];
+  ids.forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && !el.dataset.bound){
+      el.addEventListener(el.tagName==="INPUT"?"input":"change",renderPlantList);
+      el.dataset.bound="1";
     }
-    buildLibraryCategories();buildExportTree();backToCategories();
-  }catch(err){
-    console.error(err);
-    toast("บันทึกข้อมูลไม่สำเร็จ: "+(err.code==="permission-denied"?"ไม่มีสิทธิ์เขียน Firestore":"กรุณาตรวจสอบการเชื่อมต่อ"));
-  }
+  });
 }
 
-function collectForm(){
-  const out={};
-  FIELDS.forEach(([section,fields])=>fields.forEach(([key,label,type])=>{
-    if(type==="choice") out[key]=document.querySelector(`input[name="${key}"]:checked`)?.value||"";
-    else out[key]=document.getElementById(`f-${key}`)?.value.trim()||"";
-  }));
-  return out;
-}
-
-function openLibraryCategory(code){
-  libraryCategory=CATEGORIES.find(c=>c.code===code);
-  document.getElementById("libraryCategories").classList.add("hidden");
-  document.getElementById("libraryListWrap").classList.remove("hidden");
-  document.getElementById("libraryCategoryTitle").textContent=`${libraryCategory.icon} ${libraryCategory.name}`;
-  document.getElementById("librarySearch").value="";
+function setLibraryCategoryFilter(code){
+  const select=document.getElementById("libraryCategoryFilter");
+  if(select) select.value=code;
   renderPlantList();
-  document.getElementById("librarySearch").oninput=renderPlantList;
+  document.getElementById("libraryListWrap")?.scrollIntoView({behavior:"smooth",block:"start"});
 }
-function closeLibraryCategory(){
-  libraryCategory=null;
-  document.getElementById("libraryCategories").classList.remove("hidden");
-  document.getElementById("libraryListWrap").classList.add("hidden");
+
+function clearLibrarySearch(){
+  const input=document.getElementById("librarySearch");
+  if(input){input.value="";renderPlantList();input.focus();}
 }
+
+function resetLibraryFilters(){
+  ["librarySearch","libraryCategoryFilter","libraryCareFilter","libraryLightFilter","libraryWaterFilter","librarySpaceFilter","libraryBeginnerFilter","libraryPetFilter","libraryBusyFilter","libraryLimitedFilter"].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value="";
+  });
+  const sort=document.getElementById("librarySort"); if(sort) sort.value="latest";
+  renderPlantList();
+}
+
+function normalizeSearchValue(value){
+  return String(value??"").toLocaleLowerCase("th-TH").normalize("NFC").trim();
+}
+
+function plantMatchesSearch(p,q){
+  if(!q)return true;
+  const searchableKeys=[
+    "id","thaiName","scientificName","englishName","localName","family",
+    "general","highlight","belief","meaning","auspicious","beliefOrigin",
+    "planting","soil","light","water","humidity","temperature","fertilizer",
+    "propagation","pruning","disease","pests","prevention","suitableUser","petDetail"
+  ];
+  return searchableKeys.some(key=>normalizeSearchValue(p[key]).includes(q));
+}
+
 function renderPlantList(){
-  if(!libraryCategory)return;
-  const q=(document.getElementById("librarySearch").value||"").toLowerCase();
-  const rows=plants.filter(p=>p.categoryCode===libraryCategory.code && Object.values(p).some(v=>String(v?.toDate?v.toDate():v||"").toLowerCase().includes(q)));
-  document.getElementById("libraryCategoryMeta").textContent=`${rows.length} รายการ`;
+  const q=normalizeSearchValue(document.getElementById("librarySearch")?.value);
+  const category=document.getElementById("libraryCategoryFilter")?.value||"";
+  const care=document.getElementById("libraryCareFilter")?.value||"";
+  const light=document.getElementById("libraryLightFilter")?.value||"";
+  const water=document.getElementById("libraryWaterFilter")?.value||"";
+  const space=document.getElementById("librarySpaceFilter")?.value||"";
+  const beginner=document.getElementById("libraryBeginnerFilter")?.value||"";
+  const pet=document.getElementById("libraryPetFilter")?.value||"";
+  const busy=document.getElementById("libraryBusyFilter")?.value||"";
+  const limited=document.getElementById("libraryLimitedFilter")?.value||"";
+  const sort=document.getElementById("librarySort")?.value||"latest";
+
+  let rows=plants.filter(p=>{
+    if(category && p.categoryCode!==category)return false;
+    if(care && p.careLevel!==care)return false;
+    if(light && p.lightLevel!==light)return false;
+    if(water && p.waterLevel!==water)return false;
+    if(space && p.space!==space)return false;
+    if(beginner && p.beginner!==beginner)return false;
+    if(pet && p.petSafe!==pet)return false;
+    if(busy && p.busyFriendly!==busy)return false;
+    if(limited && p.limitedSpace!==limited)return false;
+    return plantMatchesSearch(p,q);
+  });
+
+  rows.sort((a,b)=>{
+    if(sort==="nameAsc")return normalizeSearchValue(a.thaiName).localeCompare(normalizeSearchValue(b.thaiName),"th");
+    if(sort==="nameDesc")return normalizeSearchValue(b.thaiName).localeCompare(normalizeSearchValue(a.thaiName),"th");
+    if(sort==="idAsc")return String(a.id||"").localeCompare(String(b.id||""),"en",{numeric:true});
+    const da=a.createdAt?.toDate?a.createdAt.toDate():new Date(a.createdAt||0);
+    const db=b.createdAt?.toDate?b.createdAt.toDate():new Date(b.createdAt||0);
+    return db-da;
+  });
+
+  const total=plants.length;
+  const resultCount=document.getElementById("libraryResultCount");
+  if(resultCount)resultCount.textContent=rows.length;
+  const meta=document.getElementById("libraryCategoryMeta");
+  if(meta)meta.textContent=`พบ ${rows.length} จาก ${total} รายการ`;
+
+  const active=[];
+  if(q)active.push(`คำค้นหา “${q}”`);
+  if(category){const c=CATEGORIES.find(x=>x.code===category);active.push(c?c.name:category);}
+  if(care)active.push(`ดูแล ${care}`);
+  if(light)active.push(`แสง ${light}`);
+  if(water)active.push(`น้ำ ${water}`);
+  if(space)active.push(`พื้นที่ ${space}`);
+  if(beginner)active.push(`มือใหม่: ${beginner}`);
+  if(pet)active.push(`สัตว์เลี้ยง: ${pet}`);
+  if(busy)active.push(`เวลาน้อย: ${busy}`);
+  if(limited)active.push(`พื้นที่จำกัด: ${limited}`);
+  const activeText=document.getElementById("libraryActiveFilterText");
+  if(activeText)activeText.textContent=active.length?`กำลังกรอง: ${active.join(" • ")}`:`แสดงข้อมูลทั้งหมด ${total} รายการ`;
+
   const wrap=document.getElementById("plantList");
-  wrap.innerHTML=rows.length?rows.map(p=>`
-    <div class="plant-row">
+  if(!wrap)return;
+  wrap.innerHTML=rows.length?rows.map(p=>{
+    const c=CATEGORIES.find(x=>x.code===p.categoryCode);
+    const adminActions=isAdminUser()?`<button class="btn ghost" onclick="editPlant('${escAttr(p.id)}')">แก้ไข</button><button class="btn danger" onclick="deletePlant('${escAttr(p.id)}')">ลบ</button>`:"";
+    return `<div class="plant-row">
       <div class="plant-id">${esc(p.id)}</div>
       <div>
         <div class="plant-name">${esc(p.thaiName)}</div>
         <div class="plant-scientific">${esc(p.scientificName)}</div>
-        <div class="plant-meta-line">ลงข้อมูล ${formatDate(p.createdAt)}</div>
-        <div class="plant-meta-line">ผู้ลงข้อมูล <strong>${esc(p.createdByName||p.createdByEmail||"ไม่ระบุ")}</strong></div>
+        <div class="plant-meta-tags"><span>${c?.icon||"🌿"} ${esc(c?.name||"ไม่ระบุ")}</span>${p.careLevel?`<span>ดูแล ${esc(p.careLevel)}</span>`:""}${p.lightLevel?`<span>แสง ${esc(p.lightLevel)}</span>`:""}${p.waterLevel?`<span>น้ำ ${esc(p.waterLevel)}</span>`:""}</div>
+        <div class="plant-meta-line">ลงข้อมูล ${formatDate(p.createdAt)} • ผู้ลงข้อมูล <strong>${esc(p.createdByName||p.createdByEmail||"ไม่ระบุ")}</strong></div>
       </div>
-      <div class="row-actions"><button class="btn ghost" onclick="viewPlant('${escAttr(p.id)}')">ดูข้อมูล</button><button class="btn ghost" onclick="editPlant('${escAttr(p.id)}')">แก้ไข</button><button class="btn danger" onclick="deletePlant('${escAttr(p.id)}')">ลบ</button></div>
-    </div>`).join(""):`<div class="export-card"><div class="export-icon">🌱</div><h2>ยังไม่มีข้อมูล</h2><p>ลองเพิ่มข้อมูลพันธุ์ไม้ในหมวดนี้</p></div>`;
+      <div class="row-actions"><button class="btn ghost" onclick="viewPlant('${escAttr(p.id)}')">ดูข้อมูล</button>${adminActions}</div>
+    </div>`;
+  }).join(""):`<div class="empty-library"><div class="export-icon">🔎</div><h2>ไม่พบข้อมูลที่ตรงกับเงื่อนไข</h2><p>ลองเปลี่ยนคำค้นหา หรือล้างตัวกรองแล้วค้นหาใหม่</p><button class="btn ghost" onclick="resetLibraryFilters()">↺ ล้างตัวกรอง</button></div>`;
 }
+
 function viewPlant(id){
   const p=plants.find(x=>x.id===id); if(!p)return;
   const labels=fieldLabelMap();
@@ -431,11 +410,12 @@ function viewPlant(id){
       ${p.updatedByName?`<div class="detail-item"><b>แก้ไขล่าสุดโดย</b><span>${esc(p.updatedByName)} • ${esc(formatDate(p.updatedAt))}</span></div>`:""}
       ${p.image?`<div class="detail-item full"><b>รูปภาพ</b><div><img src="${safeUrl(p.image)}" style="max-width:240px;border-radius:14px" onerror="this.style.display='none'"><div class="image-link"><a href="${safeUrl(p.image)}" target="_blank" rel="noopener">เปิดลิงก์รูปภาพ</a></div></div></div>`:""}
     </div>
-    <div class="form-actions"><button class="btn ghost" onclick="closeModal()">ปิด</button><button class="btn primary" onclick="closeModal();editPlant('${escAttr(p.id)}')">แก้ไขข้อมูล</button></div>
+    <div class="form-actions"><button class="btn ghost" onclick="closeModal()">ปิด</button>${isAdminUser()?`<button class="btn primary" onclick="closeModal();editPlant('${escAttr(p.id)}')">แก้ไขข้อมูล</button>`:""}</div>
   </div></div>`;
 }
 function closeModal(e){if(e && e.target!==e.currentTarget)return;document.getElementById("modalRoot").innerHTML="";}
 function editPlant(id){
+  if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่สามารถแก้ไขข้อมูลได้");return;}
   const p=plants.find(x=>x.id===id);if(!p)return;
   selectedCategory=CATEGORIES.find(c=>c.code===p.categoryCode);editingId=id;
   showPage("entry");document.getElementById("categoryPicker").classList.add("hidden");document.getElementById("formWrap").classList.remove("hidden");
@@ -443,6 +423,7 @@ function editPlant(id){
   buildForm(p);
 }
 async function deletePlant(id){
+  if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่สามารถลบข้อมูลได้");return;}
   const p=plants.find(x=>x.id===id); if(!p)return;
   if(!confirm(`ต้องการลบข้อมูล “${p.thaiName}” (${id}) ใช่หรือไม่?`))return;
   if(!confirm(`ยืนยันอีกครั้ง: ลบ ${id} ออกจากคลังข้อมูลถาวร?`))return;

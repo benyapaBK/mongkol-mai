@@ -3,32 +3,156 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // =========================================
+    // AUTHENTICATION
+    // =========================================
+
     function signedIn() {
       return request.auth != null;
     }
 
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
+    // ตรวจว่าเป็น Admin
+    function isAdmin() {
+      return signedIn()
+        && exists(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == "admin";
     }
 
+
+    // =========================================
+    // USERS
+    // =========================================
+
     match /users/{uid} {
-      allow read: if isOwner(uid);
-      allow create: if isOwner(uid);
-      allow update: if isOwner(uid);
+
+      // -----------------------------------------
+      // ดูข้อมูลสมาชิก
+      // -----------------------------------------
+
+      // สมาชิกดูข้อมูลตัวเองได้
+      // Admin ดูข้อมูลสมาชิกทุกคนได้
+      allow read: if signedIn()
+                  && (
+                    request.auth.uid == uid
+                    || isAdmin()
+                  );
+
+
+      // -----------------------------------------
+      // สร้างสมาชิก
+      // -----------------------------------------
+
+      // ผู้สมัครสร้างได้เฉพาะข้อมูลของตัวเอง
+      // และ role ต้องเป็น member เท่านั้น
+      allow create: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role == "member";
+
+
+      // -----------------------------------------
+      // แก้ไขข้อมูลสมาชิก
+      // -----------------------------------------
+
+      // สมาชิกแก้ข้อมูลตัวเองได้
+      // แต่ห้ามเปลี่ยน role
+      allow update: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role == resource.data.role;
+
+
+      // Admin แก้ข้อมูลสมาชิกได้
+      allow update: if isAdmin();
+
+
+      // -----------------------------------------
+      // ลบสมาชิก
+      // -----------------------------------------
+
+      // เฉพาะ Admin
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================
+    // PLANTS
+    // =========================================
+
+    match /plants/{plantId} {
+
+      // -----------------------------------------
+      // ดู / ค้นหา / Export
+      // -----------------------------------------
+
+      // Admin และ Member ดูข้อมูลได้
+      allow read: if signedIn();
+
+
+      // -----------------------------------------
+      // เพิ่มข้อมูลพืช
+      // -----------------------------------------
+
+      // เฉพาะ Admin
+      allow create: if isAdmin();
+
+
+      // -----------------------------------------
+      // แก้ไขข้อมูลพืช
+      // -----------------------------------------
+
+      // เฉพาะ Admin
+      allow update: if isAdmin();
+
+
+      // -----------------------------------------
+      // ลบข้อมูลพืช
+      // -----------------------------------------
+
+      // เฉพาะ Admin
+      allow delete: if isAdmin();
+    }
+
+
+    // =========================================
+    // COUNTERS
+    // =========================================
+
+    match /counters/{counterId} {
+
+      // Admin เท่านั้น
+      allow read, write: if isAdmin();
+    }
+
+
+    // =========================================
+    // ACTIVITY LOGS
+    // =========================================
+
+    match /activityLogs/{logId} {
+
+      // เฉพาะ Admin ดูได้
+      allow read: if isAdmin();
+
+      // ไม่อนุญาตให้ผู้ใช้ทั่วไปสร้างเอง
+      allow create: if isAdmin();
+
+      // ห้ามแก้ไข
+      allow update: if false;
+
+      // ห้ามลบ
       allow delete: if false;
     }
 
-    match /plants/{id} {
-      allow read, create, update, delete: if signedIn();
-    }
 
-    match /counters/{id} {
-      allow read, write: if signedIn();
-    }
+    // =========================================
+    // DEFAULT DENY
+    // =========================================
 
-    match /activityLogs/{id} {
-      allow create: if signedIn();
-      allow read, update, delete: if false;
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

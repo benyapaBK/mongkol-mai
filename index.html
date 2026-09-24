@@ -152,20 +152,96 @@
           <div>
             <span class="eyebrow">PLANT LIBRARY</span>
             <h1>คลังข้อมูลพันธุ์ไม้</h1>
-            <p>เลือกหมวดหมู่เพื่อค้นหา ดู แก้ไข หรือจัดการข้อมูล</p>
+            <p>ค้นหาพันธุ์ไม้จากข้อมูลทั้งหมด พร้อมกรองตามประเภท ลักษณะการดูแล และความเหมาะสม</p>
           </div>
-          <button class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูล</button>
+          <button id="libraryAddButton" class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูล</button>
         </div>
-        <div id="libraryCategories" class="category-grid compact"></div>
-        <div id="libraryListWrap" class="hidden">
-          <div class="library-toolbar">
-            <button class="btn ghost" onclick="closeLibraryCategory()">← กลับหมวดหมู่</button>
+
+        <section class="library-search-panel">
+          <div class="library-search-head">
             <div>
-              <h2 id="libraryCategoryTitle"></h2>
-              <span id="libraryCategoryMeta"></span>
+              <span class="eyebrow">SMART SEARCH</span>
+              <h2>ค้นหาพันธุ์ไม้โดยรวม</h2>
+              <p>ค้นหาได้จากชื่อไทย ชื่อวิทยาศาสตร์ ชื่ออังกฤษ ชื่อท้องถิ่น วงศ์พืช ความเชื่อ ความหมาย และจุดเด่น</p>
             </div>
-            <div class="search-box">
-              <span>⌕</span><input id="librarySearch" type="search" placeholder="ค้นหาชื่อไทย / วิทยาศาสตร์ / ID...">
+            <div class="library-result-summary"><strong id="libraryResultCount">0</strong><span>รายการ</span></div>
+          </div>
+
+          <div class="global-library-search search-box">
+            <span>⌕</span>
+            <input id="librarySearch" type="search" placeholder="เช่น มะลิ • Jasminum • หอม • A01..." autocomplete="off">
+            <button id="clearLibrarySearch" class="search-clear" type="button" onclick="clearLibrarySearch()" title="ล้างคำค้นหา">×</button>
+          </div>
+
+          <div class="library-filter-grid">
+            <div class="filter-field filter-wide">
+              <label for="libraryCategoryFilter">ประเภทการเจริญเติบโต</label>
+              <select id="libraryCategoryFilter"><option value="">ทุกประเภท</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryCareFilter">ระดับการดูแล</label>
+              <select id="libraryCareFilter"><option value="">ทุกระดับ</option><option>ง่าย</option><option>ปานกลาง</option><option>ยาก</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryLightFilter">ระดับแสง</label>
+              <select id="libraryLightFilter"><option value="">ทุกระดับ</option><option>น้อย</option><option>ปานกลาง</option><option>มาก</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryWaterFilter">ระดับน้ำ</label>
+              <select id="libraryWaterFilter"><option value="">ทุกระดับ</option><option>น้อย</option><option>ปานกลาง</option><option>มาก</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="librarySpaceFilter">ขนาดพื้นที่</label>
+              <select id="librarySpaceFilter"><option value="">ทุกขนาด</option><option>เล็ก</option><option>เล็ก–กลาง</option><option>ปานกลาง</option><option>ใหญ่</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryBeginnerFilter">เหมาะกับมือใหม่</label>
+              <select id="libraryBeginnerFilter"><option value="">ทั้งหมด</option><option value="ใช่">ใช่</option><option value="ไม่ใช่">ไม่ใช่</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryPetFilter">เหมาะกับสัตว์เลี้ยง</label>
+              <select id="libraryPetFilter"><option value="">ทั้งหมด</option><option value="ใช่">ใช่</option><option value="ไม่ใช่">ไม่ใช่</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryBusyFilter">เหมาะกับผู้มีเวลาน้อย</label>
+              <select id="libraryBusyFilter"><option value="">ทั้งหมด</option><option value="ใช่">ใช่</option><option value="ไม่ใช่">ไม่ใช่</option></select>
+            </div>
+            <div class="filter-field">
+              <label for="libraryLimitedFilter">เหมาะกับพื้นที่จำกัด</label>
+              <select id="libraryLimitedFilter"><option value="">ทั้งหมด</option><option value="ใช่">ใช่</option><option value="ไม่ใช่">ไม่ใช่</option></select>
+            </div>
+            <div class="filter-field filter-sort">
+              <label for="librarySort">เรียงลำดับ</label>
+              <select id="librarySort">
+                <option value="latest">เพิ่มล่าสุด</option>
+                <option value="nameAsc">ชื่อไทย A–ฮ</option>
+                <option value="nameDesc">ชื่อไทย ฮ–A</option>
+                <option value="idAsc">รหัส A01–H99</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="library-filter-actions">
+            <span id="libraryActiveFilterText">แสดงข้อมูลทั้งหมด</span>
+            <button class="btn ghost" type="button" onclick="resetLibraryFilters()">↺ ล้างตัวกรอง</button>
+          </div>
+        </section>
+
+        <section class="library-browse-section">
+          <div class="browse-section-head">
+            <div>
+              <h2>เรียกดูตามประเภท</h2>
+              <p>เลือกหมวดหมู่เพื่อเติมตัวกรองประเภทอย่างรวดเร็ว</p>
+            </div>
+          </div>
+          <div id="libraryCategories" class="category-grid compact"></div>
+        </section>
+
+        <div id="libraryListWrap">
+          <div class="library-results-head">
+            <div>
+              <h2>ผลการค้นหา</h2>
+              <span id="libraryCategoryMeta"></span>
             </div>
           </div>
           <div id="plantList" class="plant-list"></div>
