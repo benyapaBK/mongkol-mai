@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>มงคลไม้ • Plant Data Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- LOGIN GATE: ผู้ใช้ต้องเข้าสู่ระบบก่อนจึงจะเห็นเว็บไซต์ -->
+  <div id="authScreen" class="auth-screen">
+    <div class="auth-card">
+      <div class="auth-logo">🌿</div>
+      <div class="eyebrow">MONGKOL MAI DATABASE</div>
+      <h1 id="authTitle">เข้าสู่ระบบ</h1>
+      <p id="authSubtitle">เข้าสู่ระบบเพื่อจัดการฐานข้อมูลไม้มงคลร่วมกัน</p>
+
+      <div id="authError" class="auth-error hidden"></div>
+
+      <form id="authForm" class="auth-form">
+        <div id="usernameGroup" class="auth-field hidden">
+          <label for="authUsername">ชื่อผู้ใช้</label>
+          <input id="authUsername" type="text" autocomplete="username" placeholder="เช่น admin หรือ bua">
+        </div>
+
+        <div class="auth-field">
+          <label for="authEmail">อีเมล</label>
+          <input id="authEmail" type="email" autocomplete="email" placeholder="example@email.com" required>
+        </div>
+
+        <div class="auth-field">
+          <label for="authPassword">รหัสผ่าน</label>
+
+          <div class="password-field">
+            <input
+              id="authPassword"
+              type="password"
+              autocomplete="current-password"
+              placeholder="อย่างน้อย 8 ตัวอักษร"
+              required
+            >
+
+            <button
+              type="button"
+              class="password-toggle"
+              onclick="togglePassword('authPassword', this)"
+              title="แสดงรหัสผ่าน"
+            >👁</button>
+          </div>
+        </div>
+
+        <div id="confirmPasswordGroup" class="auth-field hidden">
+          <label for="authConfirmPassword">ยืนยันรหัสผ่าน</label>
+
+          <div class="password-field">
+            <input
+              id="authConfirmPassword"
+              type="password"
+              autocomplete="new-password"
+              placeholder="กรอกรหัสผ่านอีกครั้ง"
+            >
+
+            <button
+              type="button"
+              class="password-toggle"
+              onclick="togglePassword('authConfirmPassword', this)"
+              title="แสดงรหัสผ่าน"
+            >👁</button>
+          </div>
+        </div>
+
+        <button id="authSubmit" class="btn primary auth-submit" type="submit">เข้าสู่ระบบ</button>
+      </form>
+
+      <button id="authSwitch" class="auth-switch" type="button">ยังไม่มีบัญชี? สมัครสมาชิก</button>
+      <div class="auth-note">ระบบใช้ Firebase Authentication และ Cloud Firestore</div>
+    </div>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="brand" onclick="showPage('entry')">
+        <div class="brand-mark">🌿</div>
+        <div>
+          <strong>มงคลไม้</strong>
+          <span>Plant Data Manager</span>
+        </div>
+      </div>
+      <nav class="main-nav">
+        <button data-page="entry" class="nav-btn active">＋ กรอกข้อมูล</button>
+        <button data-page="library" class="nav-btn">▦ คลังข้อมูล</button>
+        <button data-page="export" class="nav-btn">⇩ ส่งออกข้อมูล</button>
+      </nav>
+      <div class="user-area">
+        <div class="user-chip">
+          <span class="user-avatar">👤</span>
+          <div>
+            <strong id="currentUsername">ผู้ใช้</strong>
+            <small id="currentEmail"></small>
+          </div>
+        </div>
+        <button class="logout-btn" onclick="logout()" title="ออกจากระบบ">ออกจากระบบ</button>
+      </div>
+      <div class="storage-status" title="ข้อมูลจัดเก็บบน Cloud Firestore">
+        <span class="status-dot"></span><span id="recordCount">0 รายการ</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- PAGE 1 -->
+      <section id="page-entry" class="page active-page">
+        <div class="hero">
+          <div>
+            <span class="eyebrow">DATABASE ENTRY</span>
+            <h1>เพิ่มข้อมูลพันธุ์ไม้<br><em>อย่างเป็นระบบ</em></h1>
+            <p>เลือกประเภทการเจริญเติบโตก่อน แล้วกรอกข้อมูลให้ครบทุกช่อง</p>
+          </div>
+          <div class="hero-leaf">🍃</div>
+        </div>
+
+        <div id="categoryPicker" class="category-grid"></div>
+
+        <div id="formWrap" class="form-panel hidden">
+          <div class="form-head">
+            <div>
+              <span class="eyebrow">NEW PLANT RECORD</span>
+              <h2 id="formTitle">กรอกข้อมูลพันธุ์ไม้</h2>
+            </div>
+            <button class="icon-btn" onclick="backToCategories()" title="ย้อนกลับ">←</button>
+          </div>
+          <div class="id-preview">
+            <div><span>รหัสรายการ</span><strong id="nextId">A01</strong></div>
+            <div><span>หมวดหมู่</span><strong id="selectedCategoryName">ไม้ยืนต้น</strong></div>
+          </div>
+
+          <form id="plantForm" novalidate></form>
+
+          <div class="form-actions">
+            <button type="button" class="btn ghost" onclick="backToCategories()">ยกเลิก / ย้อนกลับ</button>
+            <button type="button" class="btn primary" onclick="savePlant()">✓ บันทึกข้อมูล</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- PAGE 2 -->
+      <section id="page-library" class="page">
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">PLANT LIBRARY</span>
+            <h1>คลังข้อมูลพันธุ์ไม้</h1>
+            <p>เลือกหมวดหมู่เพื่อค้นหา ดู แก้ไข หรือจัดการข้อมูล</p>
+          </div>
+          <button class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูล</button>
+        </div>
+        <div id="libraryCategories" class="category-grid compact"></div>
+        <div id="libraryListWrap" class="hidden">
+          <div class="library-toolbar">
+            <button class="btn ghost" onclick="closeLibraryCategory()">← กลับหมวดหมู่</button>
+            <div>
+              <h2 id="libraryCategoryTitle"></h2>
+              <span id="libraryCategoryMeta"></span>
+            </div>
+            <div class="search-box">
+              <span>⌕</span><input id="librarySearch" type="search" placeholder="ค้นหาชื่อไทย / วิทยาศาสตร์ / ID...">
+            </div>
+          </div>
+          <div id="plantList" class="plant-list"></div>
+        </div>
+      </section>
+
+      <!-- PAGE 3 -->
+      <section id="page-export" class="page">
+        <div class="page-heading">
+          <div>
+            <span class="eyebrow">EXPORT CENTER</span>
+            <h1>ส่งออกข้อมูล</h1>
+            <p>เลือกหมวดหมู่และรายการที่ต้องการ แล้วดาวน์โหลดเป็นไฟล์ Excel (.xlsx)</p>
+          </div>
+        </div>
+        <div class="export-layout">
+          <aside class="export-sidebar">
+            <div class="select-all-row">
+              <label><input type="checkbox" id="selectAllExport" onchange="toggleAllExport(this.checked)"> เลือกทั้งหมด</label>
+              <span id="selectedExportCount">0 รายการ</span>
+            </div>
+            <div id="exportTree"></div>
+          </aside>
+          <section class="export-preview">
+            <div class="export-card">
+              <div class="export-icon">📊</div>
+              <h2>ไฟล์ Excel ที่จะได้</h2>
+              <p>ระบบจะแยกข้อมูลตามหมวดหมู่ และสร้างชีตแยกสำหรับพืชแต่ละรายการที่เลือก</p>
+              <ul>
+                <li>ชีตหมวดหมู่: รวมรายการของแต่ละประเภท</li>
+                <li>ชีตพืช: รายละเอียดเต็มของแต่ละต้น</li>
+                <li>เปิดได้ด้วย Microsoft Excel และ Google Sheets</li>
+                <li>ข้อมูลดึงจาก Cloud Firestore</li>
+              </ul>
+              <button class="btn primary large" onclick="exportXlsx()">⇩ ดาวน์โหลด Excel</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div id="modalRoot"></div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
