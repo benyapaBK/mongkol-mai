@@ -26,7 +26,7 @@ const FIELDS = [
     ["disease","โรค","textarea"],["pests","ศัตรูพืช","textarea"],["prevention","วิธีป้องกัน","textarea"]
   ]],
   ["ความปลอดภัย", [
-    ["humanToxicity","ความเป็นพิษต่อคน","textarea"],["dogToxicity","ความเป็นพิษต่อสุนัข","textarea"],["catToxicity","ความเป็นพิษต่อแมว","textarea"],["toxicParts","ส่วนที่เป็นพิษ","textarea"],["symptoms","อาการที่อาจเกิดขึ้น","textarea"],["caution","ข้อควรระวัง","textarea"]
+    ["humanToxicity","ความเป็นพิษต่อคน","textarea"],["petToxicity","ความเป็นพิษต่อสัตว์เลี้ยง","textarea"],["toxicParts","ส่วนที่เป็นพิษ","textarea"],["symptoms","อาการที่อาจเกิดขึ้น","textarea"],["caution","ข้อควรระวัง","textarea"]
   ]],
   ["ความเหมาะสมในการปลูก", [
     ["home","เหมาะกับบ้าน","choice"],["condo","เหมาะกับคอนโด","choice"],["balcony","เหมาะกับระเบียง","choice"],["garden","เหมาะกับสวน","choice"],["pot","เหมาะกับกระถาง","choice"],["space","ขนาดพื้นที่","select"]
@@ -399,6 +399,147 @@ function renderPlantList(){
   }).join(""):`<div class="empty-library"><div class="export-icon">🔎</div><h2>ไม่พบข้อมูลที่ตรงกับเงื่อนไข</h2><p>ลองเปลี่ยนคำค้นหา หรือล้างตัวกรองแล้วค้นหาใหม่</p><button class="btn ghost" onclick="resetLibraryFilters()">↺ ล้างตัวกรอง</button></div>`;
 }
 
+function buildForm(data={}){
+  const form=document.getElementById("plantForm");
+  form.innerHTML=FIELDS.map(([section, fields])=>`
+    <div class="form-section">
+      <div class="form-section-title">${section}</div>
+      <div class="fields">
+        ${fields.map(([key,label,type])=>renderField(key,label,type,data[key] ?? "")).join("")}
+      </div>
+    </div>`).join("");
+}
+
+function renderField(key,label,type,value){
+  const req=`<span class="req">*</span>`;
+  if(type==="textarea") return `<div class="field full"><label>${label}${req}</label><textarea id="f-${key}" required>${esc(value)}</textarea></div>`;
+  if(type==="select"){
+    let opts=[];
+    if(key==="growthType") opts=CATEGORIES.map(c=>c.name);
+    if(key==="space") opts=["เล็ก","เล็ก–กลาง","ปานกลาง","ใหญ่"];
+    if(key==="careLevel") opts=["ง่าย","ปานกลาง","ยาก"];
+    if(key==="lightLevel") opts=["น้อย","ปานกลาง","มาก"];
+    if(key==="waterLevel") opts=["น้อย","ปานกลาง","มาก"];
+    return `<div class="field"><label>${label}${req}</label><select id="f-${key}" required><option value="">เลือก...</option>${opts.map(o=>`<option ${o===value?"selected":""}>${o}</option>`).join("")}</select></div>`;
+  }
+  if(type==="choice"){
+    return `<div class="field"><label>${label}${req}</label><div class="choice-row">
+      ${["ใช่","ไม่ใช่"].map(o=>`<label class="choice"><input type="radio" name="${key}" value="${o}" ${value===o?"checked":""} required><span>${o}</span></label>`).join("")}
+    </div></div>`;
+  }
+  return `<div class="field"><label>${label}${req}</label><input id="f-${key}" value="${esc(value)}" required></div>`;
+}
+
+async function startNew(code){
+  selectedCategory=CATEGORIES.find(c=>c.code===code);
+  editingId=null;
+  document.getElementById("formWrap").classList.remove("hidden");
+  document.getElementById("categoryPicker").classList.add("hidden");
+  document.getElementById("formTitle").textContent="กรอกข้อมูลพันธุ์ไม้";
+  document.getElementById("selectedCategoryName").textContent=selectedCategory.name;
+  document.getElementById("nextId").textContent="กำลังตรวจสอบ...";
+  buildForm({growthType:selectedCategory.name});
+  try{
+    const id=await peekNextId(code);
+    if(!editingId && selectedCategory?.code===code) document.getElementById("nextId").textContent=id;
+  }catch(err){
+    console.error(err);
+    document.getElementById("nextId").textContent="รอการบันทึก";
+    toast("ยังตรวจสอบ ID ไม่ได้ กรุณาตรวจสอบ Firestore Rules");
+  }
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+async function peekNextId(code){
+  const snap=await db.collection("counters").doc(code).get();
+  const n=(snap.exists?(snap.data().last||0):0)+1;
+  return `${code}${String(n).padStart(2,"0")}`;
+}
+
+async function nextId(code){
+  const ref=db.collection("counters").doc(code);
+  return db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    const n=(snap.exists?(snap.data().last||0):0)+1;
+    tx.set(ref,{last:n},{merge:true});
+    return `${code}${String(n).padStart(2,"0")}`;
+  });
+}
+
+function backToCategories(){
+  document.getElementById("formWrap").classList.add("hidden");
+  document.getElementById("categoryPicker").classList.remove("hidden");
+  selectedCategory=null; editingId=null;
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+async function savePlant(){
+  if(!currentUserProfile){toast("กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล");return;}
+  const form=document.getElementById("plantForm");
+  const missing=[];
+  let first=null;
+  FIELDS.forEach(([section,fields])=>fields.forEach(([key,label,type])=>{
+    if(type==="choice"){
+      const checked=form.querySelector(`input[name="${key}"]:checked`);
+      if(!checked){missing.push(label); first=first||form.querySelector(`input[name="${key}"]`);}
+    }else{
+      const el=document.getElementById(`f-${key}`);
+      if(!el || !String(el.value||"").trim()){missing.push(label); first=first||el;}
+    }
+  }));
+  if(missing.length){
+    const preview=missing.slice(0,8).map(x=>`• ${x}`).join("\n");
+    const more=missing.length>8?`\n• และอีก ${missing.length-8} ช่อง`:"";
+    alert(`กรุณากรอกข้อมูลให้ครบทุกช่องก่อนบันทึก\n\n${preview}${more}`);
+    toast(`ยังกรอกไม่ครบ ${missing.length} ช่อง`);
+    first?.scrollIntoView({behavior:"smooth",block:"center"});
+    return;
+  }
+
+  const record=collectForm();
+  const now=firebase.firestore.FieldValue.serverTimestamp();
+
+  try{
+    if(editingId){
+      const existing=plants.find(p=>p.id===editingId);
+      if(!existing) throw new Error("ไม่พบข้อมูลที่ต้องการแก้ไข");
+      record.id=editingId;
+      record.categoryCode=existing.categoryCode;
+      record.createdAt=existing.createdAt;
+      record.createdBy=existing.createdBy;
+      record.createdByEmail=existing.createdByEmail;
+      record.createdByName=existing.createdByName;
+      record.updatedAt=now;
+      record.updatedBy=currentUserProfile.uid;
+      record.updatedByEmail=currentUserProfile.email||auth.currentUser.email;
+      record.updatedByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser.email;
+      await db.collection("plants").doc(existing.docId||existing.id).set(record,{merge:true});
+      await logActivity("update",record);
+      toast("แก้ไขข้อมูลเรียบร้อยแล้ว");
+    }else{
+      const id=await nextId(selectedCategory.code);
+      record.id=id;
+      record.categoryCode=selectedCategory.code;
+      record.createdAt=now;
+      record.updatedAt=now;
+      record.createdBy=currentUserProfile.uid;
+      record.createdByEmail=currentUserProfile.email||auth.currentUser.email;
+      record.createdByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser.email;
+      record.updatedBy=currentUserProfile.uid;
+      record.updatedByEmail=record.createdByEmail;
+      record.updatedByName=record.createdByName;
+      await db.collection("plants").add(record);
+      await logActivity("create",record);
+      toast(`บันทึก ${record.id} เรียบร้อยแล้ว`);
+    }
+    buildLibraryCategories();buildExportTree();backToCategories();
+  }catch(err){
+    console.error(err);
+    toast("บันทึกข้อมูลไม่สำเร็จ: "+(err.code==="permission-denied"?"ไม่มีสิทธิ์เขียน Firestore":"กรุณาตรวจสอบการเชื่อมต่อ"));
+  }
+}
+
+
 function viewPlant(id){
   const p=plants.find(x=>x.id===id); if(!p)return;
   const labels=fieldLabelMap();
@@ -492,6 +633,64 @@ function exportXlsx(){
   });
   XLSX.writeFile(wb,`mongkol-mai-${new Date().toISOString().slice(0,10)}.xlsx`);
   toast("สร้างไฟล์ Excel เรียบร้อยแล้ว");
+}
+
+function getExportRows(){
+  const selected=plants.filter(p=>exportSelected.has(p.id));
+  const labels=fieldLabelMap();
+  return selected.map(p=>{
+    const row={ID:p.id,"หมวดหมู่":CATEGORIES.find(c=>c.code===p.categoryCode)?.name||""};
+    Object.keys(labels).forEach(k=>{
+      row[labels[k]]=formatDetailValue(p[k]??"");
+    });
+    row["วันที่ลงข้อมูล"]=formatDate(p.createdAt);
+    row["ผู้ลงข้อมูล"]=p.createdByName||p.createdByEmail||"";
+    row["แก้ไขล่าสุด"]=formatDate(p.updatedAt);
+    row["ผู้แก้ไขล่าสุด"]=p.updatedByName||p.updatedByEmail||"";
+    return row;
+  });
+}
+
+function csvEscape(value){
+  const s=String(value??"").replace(/\r?\n/g," ");
+  return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
+}
+
+function downloadBlob(filename, content, mime){
+  const blob=new Blob([content],{type:mime});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function exportCsv(){
+  if(!exportSelected.size){toast("กรุณาเลือกข้อมูลที่ต้องการส่งออกก่อน");return;}
+  const rows=getExportRows();
+  if(!rows.length){toast("ไม่พบข้อมูลที่เลือก");return;}
+  const headers=Object.keys(rows[0]);
+  const csv=[headers.map(csvEscape).join(","),...rows.map(row=>headers.map(h=>csvEscape(row[h])).join(","))].join("\r\n");
+  // UTF-8 BOM ช่วยให้ Excel/Google Sheets อ่านภาษาไทยได้ถูกต้อง
+  downloadBlob(`mongkol-mai-${new Date().toISOString().slice(0,10)}.csv`,`\uFEFF${csv}`,"text/csv;charset=utf-8");
+  toast("ดาวน์โหลด CSV เรียบร้อยแล้ว");
+}
+
+function exportJson(){
+  if(!exportSelected.size){toast("กรุณาเลือกข้อมูลที่ต้องการส่งออกก่อน");return;}
+  const selected=plants.filter(p=>exportSelected.has(p.id)).map(p=>{
+    const copy={...p};
+    delete copy.docId;
+    ["createdAt","updatedAt"].forEach(k=>{
+      if(copy[k] && typeof copy[k].toDate==="function") copy[k]=copy[k].toDate().toISOString();
+    });
+    return copy;
+  });
+  downloadBlob(`mongkol-mai-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(selected,null,2),"application/json;charset=utf-8");
+  toast("ดาวน์โหลด JSON เรียบร้อยแล้ว");
 }
 
 function formatDetailValue(v){

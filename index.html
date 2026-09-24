@@ -254,7 +254,7 @@
           <div>
             <span class="eyebrow">EXPORT CENTER</span>
             <h1>ส่งออกข้อมูล</h1>
-            <p>เลือกหมวดหมู่และรายการที่ต้องการ แล้วดาวน์โหลดเป็นไฟล์ Excel (.xlsx)</p>
+            <p>เลือกหมวดหมู่และรายการที่ต้องการ แล้วดาวน์โหลดเป็น Excel, CSV หรือ JSON ได้ตามการใช้งาน</p>
           </div>
         </div>
         <div class="export-layout">
@@ -276,7 +276,11 @@
                 <li>เปิดได้ด้วย Microsoft Excel และ Google Sheets</li>
                 <li>ข้อมูลดึงจาก Cloud Firestore</li>
               </ul>
-              <button class="btn primary large" onclick="exportXlsx()">⇩ ดาวน์โหลด Excel</button>
+              <div class="export-format-actions">
+                 <button class="btn primary large" onclick="exportXlsx()">⇩ Excel (.xlsx)</button>
+                 <button class="btn ghost large" onclick="exportCsv()">⇩ CSV (.csv)</button>
+                 <button class="btn ghost large" onclick="exportJson()">⇩ JSON (.json)</button>
+               </div>
             </div>
           </section>
         </div>
