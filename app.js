@@ -206,7 +206,7 @@ function subscribePlants(){
       updateCount();
       buildLibraryCategories();
       buildExportTree();
-      if(libraryCategory)renderPlantList();
+      if(document.getElementById("page-library")?.classList.contains("active-page"))renderPlantList();
     },
     err=>{
       console.error(err);
@@ -227,9 +227,15 @@ function isAdminUser(){
 
 function updateRoleBasedUI(){
   const admin = isAdminUser();
-  document.querySelector('[data-page="entry"]')?.classList.toggle("hidden", !admin);
+  const entryNav=document.querySelector('[data-page="entry"]');
+  entryNav?.classList.toggle("hidden", !admin);
   document.querySelector('[data-page="export"]')?.classList.remove("hidden");
   document.getElementById("libraryAddButton")?.classList.toggle("hidden", !admin);
+
+  // Member ไม่สามารถเพิ่มข้อมูลได้ จึงพาไปหน้าคลังข้อมูลทันทีหลัง Login
+  if(!admin){
+    showPage("library");
+  }
 }
 
 function showPage(page){
@@ -292,6 +298,7 @@ function initLibrarySearchUI(){
 }
 
 function setLibraryCategoryFilter(code){
+  libraryCategory=code || null;
   const select=document.getElementById("libraryCategoryFilter");
   if(select) select.value=code;
   renderPlantList();
@@ -304,6 +311,7 @@ function clearLibrarySearch(){
 }
 
 function resetLibraryFilters(){
+  libraryCategory=null;
   ["librarySearch","libraryCategoryFilter","libraryCareFilter","libraryLightFilter","libraryWaterFilter","librarySpaceFilter","libraryBeginnerFilter","libraryPetFilter","libraryBusyFilter","libraryLimitedFilter"].forEach(id=>{
     const el=document.getElementById(id); if(el) el.value="";
   });
@@ -430,6 +438,25 @@ function renderField(key,label,type,value){
   return `<div class="field"><label>${label}${req}</label><input id="f-${key}" value="${esc(value)}" required></div>`;
 }
 
+
+function collectForm(){
+  const record = {};
+
+  FIELDS.forEach(([section, fields]) => {
+    fields.forEach(([key, label, type]) => {
+      if(type === "choice"){
+        const checked = document.querySelector(`input[name="${key}"]:checked`);
+        record[key] = checked ? checked.value : "";
+      }else{
+        const el = document.getElementById(`f-${key}`);
+        record[key] = el ? String(el.value ?? "").trim() : "";
+      }
+    });
+  });
+
+  return record;
+}
+
 async function startNew(code){
   selectedCategory=CATEGORIES.find(c=>c.code===code);
   editingId=null;
@@ -474,7 +501,14 @@ function backToCategories(){
 }
 
 async function savePlant(){
-  if(!currentUserProfile){toast("กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล");return;}
+  if(!currentUserProfile){
+    toast("กรุณาเข้าสู่ระบบก่อนบันทึกข้อมูล");
+    return;
+  }
+  if(!isAdminUser()){
+    toast("เฉพาะ Admin เท่านั้นที่สามารถเพิ่มหรือแก้ไขข้อมูลได้");
+    return;
+  }
   const form=document.getElementById("plantForm");
   const missing=[];
   let first=null;
@@ -517,25 +551,56 @@ async function savePlant(){
       await logActivity("update",record);
       toast("แก้ไขข้อมูลเรียบร้อยแล้ว");
     }else{
-      const id=await nextId(selectedCategory.code);
-      record.id=id;
-      record.categoryCode=selectedCategory.code;
-      record.createdAt=now;
-      record.updatedAt=now;
-      record.createdBy=currentUserProfile.uid;
-      record.createdByEmail=currentUserProfile.email||auth.currentUser.email;
-      record.createdByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser.email;
-      record.updatedBy=currentUserProfile.uid;
-      record.updatedByEmail=record.createdByEmail;
-      record.updatedByName=record.createdByName;
-      await db.collection("plants").add(record);
+      const code = selectedCategory.code;
+      const counterRef = db.collection("counters").doc(code);
+      const plantRefBase = db.collection("plants");
+
+      // สร้างรหัส + บันทึกข้อมูลพืชใน Transaction เดียวกัน
+      // ถ้าการบันทึกพืชล้มเหลว Counter จะไม่ถูกเพิ่มค้างไว้
+      let createdId = "";
+
+      await db.runTransaction(async tx => {
+        const counterSnap = await tx.get(counterRef);
+        const last = counterSnap.exists ? Number(counterSnap.data().last || 0) : 0;
+        const next = last + 1;
+
+        createdId = `${code}${String(next).padStart(2,"0")}`;
+
+        const plantRef = plantRefBase.doc(createdId);
+        const plantSnap = await tx.get(plantRef);
+
+        if(plantSnap.exists){
+          throw new Error(`รหัส ${createdId} มีอยู่แล้ว กรุณาลองใหม่`);
+        }
+
+        const timestamp = firebase.firestore.Timestamp.now();
+
+        record.id = createdId;
+        record.categoryCode = code;
+        record.createdAt = timestamp;
+        record.updatedAt = timestamp;
+        record.createdBy = currentUserProfile.uid;
+        record.createdByEmail = currentUserProfile.email || auth.currentUser?.email || "";
+        record.createdByName = currentUserProfile.displayName || currentUserProfile.username || auth.currentUser?.email || "";
+        record.updatedBy = currentUserProfile.uid;
+        record.updatedByEmail = record.createdByEmail;
+        record.updatedByName = record.createdByName;
+
+        tx.set(counterRef, {last: next}, {merge:true});
+        tx.set(plantRef, record);
+      });
+
       await logActivity("create",record);
-      toast(`บันทึก ${record.id} เรียบร้อยแล้ว`);
+      toast(`บันทึก ${createdId} เรียบร้อยแล้ว`);
     }
     buildLibraryCategories();buildExportTree();backToCategories();
   }catch(err){
     console.error(err);
-    toast("บันทึกข้อมูลไม่สำเร็จ: "+(err.code==="permission-denied"?"ไม่มีสิทธิ์เขียน Firestore":"กรุณาตรวจสอบการเชื่อมต่อ"));
+    let message="กรุณาตรวจสอบการเชื่อมต่อ";
+    if(err.code==="permission-denied") message="ไม่มีสิทธิ์เขียน Firestore — บัญชีนี้ต้องมี role = admin";
+    else if(err.code==="failed-precondition") message="Firestore ต้องสร้าง/ตรวจสอบ Index หรือการตั้งค่าฐานข้อมูล";
+    else if(err.message) message=err.message;
+    toast("บันทึกข้อมูลไม่สำเร็จ: "+message);
   }
 }
 
@@ -589,6 +654,61 @@ async function logActivity(action,p){
       createdAt:firebase.firestore.FieldValue.serverTimestamp()
     });
   }catch(err){console.warn("activity log failed",err);}
+}
+
+function openHelp(){
+  const root=document.getElementById("helpRoot");
+  if(!root)return;
+  root.innerHTML=`
+    <div class="help-backdrop" onclick="closeHelp(event)">
+      <section class="help-modal" onclick="event.stopPropagation()" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+        <div class="help-head">
+          <div>
+            <span class="eyebrow">HELP CENTER</span>
+            <h2 id="helpTitle">วิธีใช้งาน มงคลไม้</h2>
+            <p>คู่มือสั้น ๆ สำหรับค้นหา เพิ่ม แก้ไข และส่งออกข้อมูลพันธุ์ไม้</p>
+          </div>
+          <button class="icon-btn" type="button" onclick="closeHelp()" aria-label="ปิด">×</button>
+        </div>
+
+        <div class="help-grid">
+          <article class="help-card">
+            <div class="help-icon">🌱</div>
+            <div><h3>1. เพิ่มข้อมูลพันธุ์ไม้</h3><p>สำหรับ Admin ให้เลือก <strong>＋ กรอกข้อมูล</strong> หรือ <strong>＋ เพิ่มข้อมูล</strong> ในคลังข้อมูล จากนั้นเลือกประเภทการเจริญเติบโต แล้วกรอกข้อมูลให้ครบทุกช่องก่อนกดบันทึก</p></div>
+          </article>
+          <article class="help-card">
+            <div class="help-icon">☁️</div>
+            <div><h3>2. ข้อมูลถูกเก็บใน Firestore</h3><p>เมื่อบันทึกสำเร็จ ระบบจะสร้างรหัส เช่น A01, B01 และบันทึกลง Cloud Firestore อัตโนมัติ จากนั้นข้อมูลจะปรากฏในคลังข้อมูลแบบเรียลไทม์</p></div>
+          </article>
+          <article class="help-card">
+            <div class="help-icon">🔎</div>
+            <div><h3>3. ค้นหาและกรอง</h3><p>หน้า <strong>▦ คลังข้อมูล</strong> ค้นหาได้จากชื่อไทย ชื่อวิทยาศาสตร์ ชื่ออังกฤษ ชื่อท้องถิ่น วงศ์พืช ความเชื่อ จุดเด่น และข้อมูลอื่น ๆ พร้อมตัวกรองตามประเภท การดูแล แสง น้ำ และความเหมาะสม</p></div>
+          </article>
+          <article class="help-card">
+            <div class="help-icon">👑</div>
+            <div><h3>4. สิทธิ์การใช้งาน</h3><p><strong>Admin</strong> สามารถเพิ่ม แก้ไข และลบข้อมูลได้ ส่วน <strong>Member</strong> สามารถดู ค้นหา และส่งออกข้อมูลได้ แต่ไม่สามารถแก้ไขฐานข้อมูล</p></div>
+          </article>
+          <article class="help-card">
+            <div class="help-icon">📤</div>
+            <div><h3>5. ส่งออกข้อมูล</h3><p>ไปที่ <strong>⇩ ส่งออกข้อมูล</strong> เลือกรายการที่ต้องการ แล้วดาวน์โหลดเป็น Excel, CSV หรือ JSON ได้</p></div>
+          </article>
+          <article class="help-card">
+            <div class="help-icon">🛠️</div>
+            <div><h3>6. หากบันทึกไม่สำเร็จ</h3><p>ตรวจสอบว่าบัญชีเป็น <strong>Admin</strong> และเข้าสู่ระบบอยู่ หากยังมีปัญหา ให้ตรวจสอบ Firestore Rules และอินเทอร์เน็ต</p></div>
+          </article>
+        </div>
+
+        <div class="help-footer">
+          <span>💡 ข้อมูลบนเว็บไซต์เชื่อมกับ Cloud Firestore</span>
+          <button class="btn primary" type="button" onclick="closeHelp()">เข้าใจแล้ว</button>
+        </div>
+      </section>
+    </div>`;
+}
+
+function closeHelp(event){
+  if(event && event.target!==event.currentTarget)return;
+  document.getElementById("helpRoot").innerHTML="";
 }
 
 function fieldLabelMap(){const m={};FIELDS.forEach(([s,fs])=>fs.forEach(([k,l])=>m[k]=l));return m}
