@@ -636,7 +636,7 @@ function renderField(key,label,type,value){
   if(type==="select"){
     let opts=[];
     if(key==="growthType") opts=CATEGORIES.map(c=>c.name);
-    if(key==="space") opts=["เล็ก","เล็ก–กลาง","ปานกลาง","ใหญ่"];
+    if(key==="space") opts=["เล็ก","เล็ก–กลาง","ปานกลาง","ปานกลาง–ใหญ่","ใหญ่"];
     if(key==="careLevel") opts=["ง่าย","ปานกลาง","ยาก"];
     if(key==="lightLevel") opts=["น้อย","ปานกลาง","มาก"];
     if(key==="waterLevel") opts=["น้อย","ปานกลาง","มาก"];
