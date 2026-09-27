@@ -1,163 +1,131 @@
-# มงคลไม้ — Plant Data Manager (Firebase + Firestore Only)
+# มงคลไม้ — Plant Data Manager (Firebase + Firestore)
 
-เวอร์ชันนี้เป็นฐานข้อมูลออนไลน์แบบหลายผู้ใช้ โดยใช้ **Firebase Authentication + Cloud Firestore** เท่านั้น
+ระบบฐานข้อมูลออนไลน์หลายผู้ใช้สำหรับข้อมูลไม้มงคลไทย พัฒนาด้วย HTML/CSS/Vanilla JavaScript และ Firebase Authentication + Cloud Firestore โดยเวอร์ชันนี้ไม่ใช้ Firebase Storage รูปภาพจึงเก็บเป็น URL
 
-- ไม่ใช้ `localStorage` เป็นฐานข้อมูลหลัก
-- ไม่ใช้ Firebase Storage
-- ไม่ต้องอัปโหลดไฟล์รูปเข้า Firebase
-- ช่องรูปภาพใช้ **URL ของรูปภาพ**
-- ต้อง Login ก่อนเข้าใช้งานเว็บไซต์
-- สมัครสมาชิกได้จากหน้า Login
-- ทุกข้อมูลพืชบันทึก `createdByName`, `createdByEmail`, `createdAt`
-- ในรายการคลังจะแสดงทั้งวันเวลาและผู้ลงข้อมูล
-- มี `updatedByName`, `updatedByEmail`, `updatedAt` เมื่อแก้ไข
-- มี `activityLogs` สำหรับบันทึกการเพิ่ม/แก้ไข/ลบ
+## ฟังก์ชันหลัก
 
-## 1) เชื่อม Firebase
+### สิทธิ์
+- **Admin:** ดู/ค้นหา/ส่งออก/เพิ่ม/แก้ไข/ลบ/กู้คืน/ดูประวัติ/สำรองข้อมูล
+- **Member:** ดู/ค้นหา/ส่งออกข้อมูล
+- Admin สามารถแก้ไขข้อมูลพืชของผู้ใช้คนอื่นได้ โดยยังคงเก็บ `createdBy*` เดิมและบันทึก `updatedBy*` เป็นผู้แก้ล่าสุด
 
-1. เปิด `firebase-config.js`
-2. Firebase Console → Project settings → Your apps → Web app
-3. คัดลอก `firebaseConfig` ของโปรเจกต์มาแทนค่าตัวอย่างในไฟล์
-4. ไม่ต้องใส่ Storage config เพิ่ม เพราะเวอร์ชันนี้ไม่ใช้ Firebase Storage
+### การกรอกข้อมูล
+- หมวด A–H: ไม้ยืนต้น, ไม้พุ่ม, ไม้ล้มลุก, ไม้เลื้อย, ไม้คลุมดิน, ต้นปาล์ม, ไม้อวบน้ำ, ไม้ไผ่
+- ID รูปแบบ A01–H99 และกำหนด ID เองได้ โดยต้องตรงกับหมวดและห้ามซ้ำ
+- ตรวจข้อมูลซ้ำจากชื่อไทย/ชื่อวิทยาศาสตร์ก่อนบันทึก
+- ข้อมูลไม่ครบยังสามารถยืนยันบันทึกได้ พร้อมรายการช่องที่ขาดและปุ่มกระโดดกลับไปกรอก
+- ยืนยันก่อนบันทึกจริงและแสดงความคืบหน้าการบันทึก
 
-ไฟล์ที่เกี่ยวข้อง:
-- `firebase-config.js` — Firebase Web config
-- `app.js` — Authentication + Firestore logic
-- `index.html` — Firebase SDK และหน้า Login/Register
+### Draft / กรอกข้อมูลต่อ
+- Auto-save แบบร่างหลังหยุดพิมพ์
+- ตั้งชื่อแบบร่างเอง
+- แบบร่างแยกตามบัญชี
+- เริ่มรายการใหม่โดยไม่ลบแบบร่างเดิม
+- กลับมากรอกต่อได้หลังรีเฟรชหรือเข้าสู่ระบบใหม่
 
-## 2) เปิด Authentication
+### คลังข้อมูล
+- Smart Search หลายฟิลด์
+- ตัวกรองประเภท/การดูแล/แสง/น้ำ/พื้นที่/มือใหม่/สัตว์เลี้ยง/เวลาน้อย/พื้นที่จำกัด
+- เรียงล่าสุด ชื่อไทย และ ID
+- ดูรายละเอียดแบบแบ่งหมวด
+- แสดงผู้ลงข้อมูลและผู้แก้ไขล่าสุด
 
-Firebase Console → Authentication → Sign-in method
+### ประวัติและความปลอดภัยของข้อมูล
+- **Version History:** เก็บ Snapshot ก่อนการแก้ไขแต่ละครั้ง และห้ามแก้/ลบ Version
+- **Activity Logs:** เพิ่ม/แก้ไข/ย้ายเข้าถังขยะ/กู้คืน/ลบถาวร/ส่งคำขอลบ
+- **Soft Delete:** ลบเข้าถังขยะก่อน
+- **Restore:** กู้คืนข้อมูลจากถังขยะได้
+- **Permanent Delete:** ลบจาก Firestore ถาวร
+- ข้อมูลของผู้ใช้คนอื่นมีขั้นตอน Deletion Request แทนการลบทันที
 
-เปิด:
-- Email/Password
+### Counters A–H
+แต่ละ `counters/{A..H}` มีอย่างน้อย:
+- `count` = จำนวนข้อมูลที่ยังใช้งานอยู่ในหมวดนั้น
+- `last` = เลข ID สูงสุดที่เคยใช้งานในหมวดนั้น
+- `categoryCode`
+- `updatedAt`
 
-หน้าเว็บมี:
-- เข้าสู่ระบบ
-- สมัครสมาชิก
-- ออกจากระบบ
+การทำงาน:
+- เพิ่มข้อมูล 1 รายการ → `count + 1`
+- Soft Delete 1 รายการ → `count - 1`
+- Restore 1 รายการ → `count + 1`
+- Permanent Delete จากถังขยะ → ไม่ลดซ้ำ เพราะลดไปแล้วตอน Soft Delete
+- `last` ไม่ลดลงเมื่อมีการลบ เพื่อป้องกันการนำ ID เดิมกลับมาใช้ซ้ำ
+- Admin มีปุ่ม **ตรวจสอบ / ซ่อม Counters** เพื่อคำนวณค่าจาก `plants` ใหม่ทั้ง 8 หมวด
 
-ตอนสมัคร ระบบจะสร้างเอกสาร:
-`users/{uid}`
+### Export / Backup
+- Excel `.xlsx`
+- CSV UTF-8 BOM
+- JSON
+- Admin Backup Excel/JSON รวม:
+  - Plants
+  - Plant Version History
+  - Activity Logs
+  - Counters
+  - Deletion Requests
+- Export ปกติจะส่งเฉพาะข้อมูลที่ยังใช้งานอยู่ ส่วน Backup รวมข้อมูลที่อยู่ในถังขยะด้วย
 
-ตัวอย่างข้อมูล:
-```text
-username
-displayName
-email
-role: "member"
-createdAt
-```
-
-## 3) Cloud Firestore
-
-สร้าง Firestore Database แบบ Standard edition
-
-ระบบใช้ Collections:
+## Collections
 ```text
 users
 plants
 counters
 activityLogs
+plantVersions
+drafts
+deletionsRequests
 ```
 
-### plants
-แต่ละรายการมีข้อมูลพืช + metadata เช่น:
+> ชื่อ collection จริงสำหรับคำขอลบคือ `deletionRequests`
+
+## Firebase Rules
+ใช้ไฟล์ `firestore.rules` ที่อยู่ในโฟลเดอร์นี้เป็น Rules เวอร์ชันล่าสุดของระบบ
+
+หลังแก้ Rules ต้อง Deploy ก่อนจึงจะมีผลกับเว็บไซต์:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+หากต้องการ Deploy Hosting ด้วย:
+
+```bash
+firebase deploy --only hosting
+```
+
+หรือทั้ง Rules และ Hosting:
+
+```bash
+firebase deploy --only firestore:rules,hosting
+```
+
+## Firebase Config
+แก้ `firebase-config.js` ด้วย Web App config ของ Firebase project ของคุณ
+
+Web config เช่น `apiKey`, `authDomain`, `projectId` เป็นค่าที่ใช้กับ Firebase Web SDK และไม่ใช่ตัวควบคุมสิทธิ์หลักของฐานข้อมูล ความปลอดภัยจริงอยู่ที่ Authentication และ Firestore Rules
+
+## โครงสร้างไฟล์
 ```text
-id
-categoryCode
-createdAt
-createdBy
-createdByName
-createdByEmail
-updatedAt
-updatedBy
-updatedByName
-updatedByEmail
+index.html
+style.css
+app.js
+firebase-config.js
+firestore.rules
+firebase.json
+.firebaserc
+README.md
 ```
 
-ID ใช้รูปแบบ:
-```text
-A01, A02, ...
-B01, B02, ...
-...
-H01, H02, ...
-```
-
-การสร้าง ID ใหม่ใช้ Firestore Transaction ผ่าน `counters/{A..H}`
-
-## 4) Firestore Rules
-
-ตัวอย่าง Rules ที่สอดคล้องกับเว็บนี้:
-
-```rules
-rules_version = '2';
-
-service cloud.firestore {
-  match /databases/{database}/documents {
-
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    function isOwner(uid) {
-      return signedIn() && request.auth.uid == uid;
-    }
-
-    match /users/{uid} {
-      allow read: if isOwner(uid);
-      allow create: if isOwner(uid);
-      allow update: if isOwner(uid);
-      allow delete: if false;
-    }
-
-    match /plants/{id} {
-      allow read, create, update, delete: if signedIn();
-    }
-
-    match /counters/{id} {
-      allow read, write: if signedIn();
-    }
-
-    match /activityLogs/{id} {
-      allow create: if signedIn();
-      allow read, update, delete: if false;
-    }
-  }
-}
-```
-
-> สำหรับงานจริงที่มี Admin ควรเพิ่ม role-based rules ให้ Admin มีสิทธิ์จัดการสมาชิกและข้อมูลได้มากกว่าสมาชิกทั่วไป
-
-## 5) เปิดเว็บ
-
-แนะนำ:
-- เปิดโฟลเดอร์ใน VS Code
-- ติดตั้ง Live Server
-- คลิกขวา `index.html`
-- Open with Live Server
-
-ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อโหลด Firebase SDK และเชื่อม Firestore
-
-## 6) รูปภาพ
-
-เวอร์ชันนี้ **ไม่ใช้ Firebase Storage** เพราะฉะนั้นช่องรูปภาพเป็น:
-`ลิงก์รูปภาพ (URL)`
-
-ควรใช้ URL ของรูปที่คุณมีสิทธิ์ใช้งาน และควรใช้ HTTPS เช่น:
-```text
-https://example.com/plant.jpg
-```
-
-## 7) การทดสอบ
-
-1. เปิดเว็บ
-2. สมัครสมาชิก
-3. ตรวจ `Authentication → Users`
-4. ตรวจ `Firestore → users`
-5. เพิ่มข้อมูลต้นไม้
-6. ตรวจ `Firestore → plants`
-7. เปิดคลังข้อมูล จะเห็น:
-   - วันที่ลงข้อมูล
-   - ผู้ลงข้อมูล
-8. Login จากอีกบัญชีหนึ่ง ข้อมูลพืชจะเห็นร่วมกันตาม Firestore Rules
+## การทดสอบที่ควรทำหลังอัปเดต
+1. Login ด้วย Admin
+2. เพิ่ม A01 → ตรวจ `counters/A` ว่า `count` เพิ่ม 1 และ `last` เป็น 1
+3. เพิ่ม A05 → ตรวจ `count` เพิ่มอีก 1 และ `last` เป็น 5
+4. แก้ A01 ด้วย Admin คนละบัญชีจากผู้สร้าง → ต้องแก้ได้ และ `createdBy` เดิมต้องไม่เปลี่ยน
+5. เปิด Version History → ต้องมี Snapshot ก่อนแก้
+6. ลบ A01 → `plants/A01.isDeleted = true` และ `counters/A.count` ลด 1
+7. Restore A01 → `count` เพิ่ม 1 กลับมา
+8. ลบถาวร → `count` ต้องไม่ลดซ้ำ
+9. กดตรวจสอบ/ซ่อม Counters → ค่า `count` และ `last` ต้องตรงกับข้อมูลจริง
+10. ตรวจ Activity Logs
+11. ทดสอบ Member ว่าเพิ่ม/แก้ไข/ลบไม่ได้ แต่ดู ค้นหา และ Export ได้
+12. ทดสอบ Draft ว่าแต่ละบัญชีเห็นเฉพาะ Draft ของตัวเอง

@@ -249,7 +249,7 @@ async function logout(){
   try{await auth.signOut();}catch(err){toast("ออกจากระบบไม่สำเร็จ");}
 }
 
-function updateCount(){document.getElementById("recordCount").textContent = `${plants.length} รายการ`;}
+function updateCount(){const active=plants.filter(p=>!p.isDeleted).length; const trash=plants.filter(p=>p.isDeleted).length; const el=document.getElementById("recordCount"); if(el)el.textContent = trash?`${active} รายการ • ถังขยะ ${trash}`:`${active} รายการ`;}
 
 function isAdminUser(){
   return currentUserProfile?.role === "admin";
@@ -386,7 +386,7 @@ async function deleteDraft(id,closeAfter=false){
 function buildLibraryCategories(){
   const wrap=document.getElementById("libraryCategories");
   wrap.innerHTML=CATEGORIES.map(c=>{
-    const count=plants.filter(p=>p.categoryCode===c.code).length;
+    const count=plants.filter(p=>p.categoryCode===c.code && !p.isDeleted).length;
     return `<button class="category-card" onclick="setLibraryCategoryFilter('${c.code}')">
       <span class="code">${c.code}</span><div class="cat-icon">${c.icon}</div>
       <h3>${c.name}</h3><p>${count} รายการ • ใช้เป็นตัวกรอง</p>
@@ -737,6 +737,63 @@ async function peekNextId(code){
   return `${code}${String(n).padStart(2,"0")}`;
 }
 
+async function initializeCounterIfNeeded(code){
+  const ref=db.collection("counters").doc(code);
+  const snap=await ref.get();
+  const data=snap.exists?snap.data():{};
+  if(Number.isFinite(Number(data.count)) && Number.isFinite(Number(data.last))) return data;
+
+  // รองรับฐานข้อมูลเก่าที่มีเพียง last หรือยังไม่มี count
+  const plantSnap=await db.collection("plants").where("categoryCode","==",code).get();
+  let count=0, last=Number(data.last||0);
+  plantSnap.forEach(d=>{
+    const p=d.data()||{};
+    if(!p.isDeleted) count++;
+    const n=Number(String(p.id||"").replace(/^[A-H]/i,""));
+    if(Number.isFinite(n)) last=Math.max(last,n);
+  });
+  await ref.set({categoryCode:code,count,last,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+  return {count,last};
+}
+
+async function adjustCounterInTransaction(tx,code,delta){
+  const ref=db.collection("counters").doc(code);
+  const snap=await tx.get(ref);
+  const data=snap.exists?snap.data():{};
+  const current=Number(data.count||0);
+  const next=Math.max(0,current+delta);
+  tx.set(ref,{categoryCode:code,count:next,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+  return next;
+}
+
+async function syncAllCounters(showToast=true){
+  if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่ตรวจสอบ Counters ได้");return;}
+  try{
+    const snap=await db.collection("plants").get();
+    const stats={};
+    CATEGORIES.forEach(c=>stats[c.code]={count:0,last:0});
+    snap.forEach(d=>{
+      const p=d.data()||{};
+      const code=p.categoryCode;
+      if(!stats[code])return;
+      if(!p.isDeleted)stats[code].count++;
+      const n=Number(String(p.id||"").replace(/^[A-H]/i,""));
+      if(Number.isFinite(n))stats[code].last=Math.max(stats[code].last,n);
+    });
+    const batch=db.batch();
+    CATEGORIES.forEach(c=>{
+      const ref=db.collection("counters").doc(c.code);
+      batch.set(ref,{categoryCode:c.code,count:stats[c.code].count,last:stats[c.code].last,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
+    });
+    await batch.commit();
+    if(showToast)toast("ตรวจสอบและปรับ Counters ครบทั้ง 8 หมวดแล้ว");
+    return stats;
+  }catch(err){
+    console.error(err);
+    toast("ปรับ Counters ไม่สำเร็จ: "+(err.code==="permission-denied"?"Firestore Rules ยังไม่อนุญาต":"กรุณาลองใหม่"));
+  }
+}
+
 async function nextId(code){
   const ref=db.collection("counters").doc(code);
   return db.runTransaction(async tx=>{
@@ -857,12 +914,35 @@ async function commitPlantToFirestore(){
       record.updatedBy=currentUserProfile.uid;
       record.updatedByEmail=currentUserProfile.email||auth.currentUser?.email||"";
       record.updatedByName=currentUserProfile.displayName||currentUserProfile.username||auth.currentUser?.email||"";
-      setSaveProgress(40,"กำลังเก็บ Version เดิม...");
-      await savePlantVersion(existing,"update");
-      setSaveProgress(55,"กำลังบันทึกการแก้ไขข้อมูล...");
-      await db.collection("plants").doc(existing.docId||existing.id).set(record,{merge:true});
-      setSaveProgress(75,"กำลังบันทึกประวัติการทำงาน...");
-      await logActivity("update",record);
+      setSaveProgress(40,"กำลังบันทึก Version และการแก้ไขแบบปลอดภัย...");
+      const plantRef=db.collection("plants").doc(existing.docId||existing.id);
+      const versionRef=db.collection("plantVersions").doc();
+      const logRef=db.collection("activityLogs").doc();
+      const versionSnapshot={...existing};
+      delete versionSnapshot.docId;
+      const now=firebase.firestore.FieldValue.serverTimestamp();
+      const batch=db.batch();
+      batch.set(versionRef,{
+        plantId:existing.id,
+        plantName:existing.thaiName||"",
+        categoryCode:existing.categoryCode||"",
+        action:"update",
+        snapshot:versionSnapshot,
+        changedBy:currentUserProfile.uid,
+        changedByEmail:currentUserProfile.email||auth.currentUser?.email||"",
+        changedByName:currentUserProfile.displayName||currentUserProfile.username||auth.currentUser?.email||"",
+        createdAt:now
+      });
+      batch.set(plantRef,record,{merge:true});
+      batch.set(logRef,{
+        action:"update",plantId:record.id||"",plantName:record.thaiName||"",
+        userId:currentUserProfile.uid,
+        userEmail:currentUserProfile.email||auth.currentUser?.email||"",
+        userName:currentUserProfile.displayName||currentUserProfile.username||"",
+        createdAt:now
+      });
+      await batch.commit();
+      setSaveProgress(78,"บันทึกข้อมูลและประวัติเรียบร้อย...");
       if(draftId)await db.collection("drafts").doc(draftId).delete();
       setSaveProgress(100,"บันทึกข้อมูลเรียบร้อยแล้ว");
       await new Promise(r=>setTimeout(r,500));
@@ -897,10 +977,13 @@ async function commitPlantToFirestore(){
 
     const counterRef=db.collection("counters").doc(code);
     let createdId=idCheck.id;
-    setSaveProgress(35,`กำลังตรวจสอบรหัส ${createdId}...`);
+    setSaveProgress(35,`กำลังตรวจสอบรหัส ${createdId} และจำนวนในหมวด...`);
+    await initializeCounterIfNeeded(code);
     await db.runTransaction(async tx=>{
       const counterSnap=await tx.get(counterRef);
-      const last=counterSnap.exists?Number(counterSnap.data().last||0):0;
+      const counterData=counterSnap.exists?counterSnap.data():{};
+      const last=Number(counterData.last||0);
+      const count=Number(counterData.count||0);
 
       // ถ้าผู้ใช้เลือก ID เอง ให้รหัสถัดไปอัตโนมัติเดินต่อจากเลขที่สูงสุด
       const nextCounter=Math.max(last,idCheck.number);
@@ -922,7 +1005,7 @@ async function commitPlantToFirestore(){
       record.updatedByName=record.createdByName;
       record.isDeleted=false;
 
-      tx.set(counterRef,{last:nextCounter},{merge:true});
+      tx.set(counterRef,{last:nextCounter,count:count+1,categoryCode:code,updatedAt:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});
       tx.set(plantRef,record);
     });
 
@@ -940,7 +1023,7 @@ async function commitPlantToFirestore(){
     console.error(err);
     document.getElementById("modalRoot").innerHTML="";
     let message="กรุณาตรวจสอบการเชื่อมต่อ";
-    if(err.code==="permission-denied")message="ไม่มีสิทธิ์เขียน Firestore — บัญชีนี้ต้องมี role = admin";
+    if(err.code==="permission-denied")message="Firestore ปฏิเสธการเขียนข้อมูล — ตรวจสอบว่า users/<UID> ของคุณมี role = admin และได้ Deploy firestore.rules เวอร์ชันล่าสุดแล้ว";
     else if(err.code==="failed-precondition")message="Firestore ต้องตรวจสอบ Index หรือการตั้งค่าฐานข้อมูล";
     else if(err.message)message=err.message;
     toast("บันทึกข้อมูลไม่สำเร็จ: "+message);
@@ -1020,19 +1103,32 @@ async function deletePlant(id){
     if(!confirm(`ต้องการย้ายข้อมูล “${p.thaiName||"ไม่ระบุชื่อ"}” (${id}) ไปถังขยะใช่หรือไม่?`))return;
     if(!confirm(`ยืนยันอีกครั้ง: ย้าย ${id} ไปถังขยะ? ข้อมูลยังสามารถกู้คืนได้`))return;
     try{
-      await db.collection("plants").doc(p.docId||p.id).update({
-        isDeleted:true,
-        deletedAt:firebase.firestore.FieldValue.serverTimestamp(),
-        deletedBy:currentUserProfile.uid,
-        deletedByEmail:currentUserProfile.email||auth.currentUser?.email||"",
-        deletedByName:currentUserProfile.displayName||currentUserProfile.username||auth.currentUser?.email||"",
-        updatedAt:firebase.firestore.FieldValue.serverTimestamp(),
-        updatedBy:currentUserProfile.uid,
-        updatedByEmail:currentUserProfile.email||"",
-        updatedByName:currentUserProfile.displayName||currentUserProfile.username||""
+      await initializeCounterIfNeeded(p.categoryCode);
+      const plantRef=db.collection("plants").doc(p.docId||p.id);
+      const counterRef=db.collection("counters").doc(p.categoryCode);
+      const logRef=db.collection("activityLogs").doc();
+      await db.runTransaction(async tx=>{
+        const plantSnap=await tx.get(plantRef);
+        if(!plantSnap.exists)throw new Error("ไม่พบข้อมูลพืชใน Firestore");
+        const current=plantSnap.data()||{};
+        if(current.isDeleted)throw new Error("ข้อมูลนี้อยู่ในถังขยะแล้ว");
+        const counterSnap=await tx.get(counterRef);
+        const count=Math.max(0,Number(counterSnap.exists?counterSnap.data().count||0:0)-1);
+        const now=firebase.firestore.FieldValue.serverTimestamp();
+        tx.update(plantRef,{
+          isDeleted:true,
+          deletedAt:now,
+          deletedBy:currentUserProfile.uid,
+          deletedByEmail:currentUserProfile.email||auth.currentUser?.email||"",
+          deletedByName:currentUserProfile.displayName||currentUserProfile.username||auth.currentUser?.email||"",
+          updatedAt:now,updatedBy:currentUserProfile.uid,
+          updatedByEmail:currentUserProfile.email||"",
+          updatedByName:currentUserProfile.displayName||currentUserProfile.username||""
+        });
+        tx.set(counterRef,{categoryCode:p.categoryCode,count,updatedAt:now},{merge:true});
+        tx.set(logRef,{action:"delete",plantId:p.id||"",plantName:p.thaiName||"",userId:currentUserProfile.uid,userEmail:currentUserProfile.email||auth.currentUser?.email||"",userName:currentUserProfile.displayName||currentUserProfile.username||"",createdAt:now});
       });
-      await logActivity("delete",p);
-      toast("ย้ายข้อมูลเข้าถังขยะแล้ว");
+      toast("ย้ายข้อมูลเข้าถังขยะแล้ว และลดจำนวนใน Counters 1 รายการ");
     }catch(err){
       console.error(err);
       toast("ย้ายข้อมูลเข้าถังขยะไม่สำเร็จ: "+(err.code==="permission-denied"?"ไม่มีสิทธิ์แก้ไขข้อมูล":"กรุณาลองใหม่"));
@@ -1183,9 +1279,24 @@ async function restorePlant(id){
   const p=plants.find(x=>x.id===id && x.isDeleted); if(!p)return;
   if(!confirm(`กู้คืน ${id} • ${p.thaiName||""} ใช่หรือไม่?`))return;
   try{
-    await db.collection("plants").doc(p.docId||p.id).update({isDeleted:false,deletedAt:firebase.firestore.FieldValue.delete(),deletedBy:firebase.firestore.FieldValue.delete(),deletedByEmail:firebase.firestore.FieldValue.delete(),deletedByName:firebase.firestore.FieldValue.delete(),updatedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedBy:currentUserProfile.uid,updatedByEmail:currentUserProfile.email||"",updatedByName:currentUserProfile.displayName||currentUserProfile.username||""});
-    await logActivity("restore",p); toast(`กู้คืน ${id} แล้ว`); openTrash();
-  }catch(err){console.error(err);toast("กู้คืนไม่สำเร็จ");}
+    await initializeCounterIfNeeded(p.categoryCode);
+    const plantRef=db.collection("plants").doc(p.docId||p.id);
+    const counterRef=db.collection("counters").doc(p.categoryCode);
+    const logRef=db.collection("activityLogs").doc();
+    await db.runTransaction(async tx=>{
+      const plantSnap=await tx.get(plantRef);
+      if(!plantSnap.exists)throw new Error("ไม่พบข้อมูลพืช");
+      const current=plantSnap.data()||{};
+      if(!current.isDeleted)throw new Error("ข้อมูลนี้ไม่ได้อยู่ในถังขยะ");
+      const counterSnap=await tx.get(counterRef);
+      const count=Number(counterSnap.exists?counterSnap.data().count||0:0)+1;
+      const now=firebase.firestore.FieldValue.serverTimestamp();
+      tx.update(plantRef,{isDeleted:false,deletedAt:firebase.firestore.FieldValue.delete(),deletedBy:firebase.firestore.FieldValue.delete(),deletedByEmail:firebase.firestore.FieldValue.delete(),deletedByName:firebase.firestore.FieldValue.delete(),updatedAt:now,updatedBy:currentUserProfile.uid,updatedByEmail:currentUserProfile.email||"",updatedByName:currentUserProfile.displayName||currentUserProfile.username||""});
+      tx.set(counterRef,{categoryCode:p.categoryCode,count,updatedAt:now},{merge:true});
+      tx.set(logRef,{action:"restore",plantId:p.id||"",plantName:p.thaiName||"",userId:currentUserProfile.uid,userEmail:currentUserProfile.email||auth.currentUser?.email||"",userName:currentUserProfile.displayName||currentUserProfile.username||"",createdAt:now});
+    });
+    toast(`กู้คืน ${id} แล้ว และเพิ่มจำนวนใน Counters 1 รายการ`); openTrash();
+  }catch(err){console.error(err);toast("กู้คืนไม่สำเร็จ: "+(err.code==="permission-denied"?"ไม่มีสิทธิ์เขียน Counters/Plants":"กรุณาลองใหม่"));}
 }
 
 async function permanentDeletePlant(id){
@@ -1196,6 +1307,7 @@ async function permanentDeletePlant(id){
   try{
     await db.collection("plants").doc(p.docId||p.id).delete();
     await logActivity("permanent_delete",p);
+    // Counters ไม่ลดซ้ำ เพราะจำนวนถูกลดตั้งแต่ตอน Soft Delete แล้ว
     toast(`ลบ ${id} ถาวรแล้ว`); openTrash();
   }catch(err){console.error(err);toast("ลบถาวรไม่สำเร็จ");}
 }
@@ -1203,15 +1315,17 @@ async function permanentDeletePlant(id){
 async function exportFullBackupJson(){
   if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่สำรองฐานข้อมูลทั้งหมดได้");return;}
   try{
-    const [plantsSnap,versionsSnap,logsSnap]=await Promise.all([
-      db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get()
+    const [plantsSnap,versionsSnap,logsSnap,countersSnap,requestsSnap]=await Promise.all([
+      db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get()
     ]);
     const payload={
       exportedAt:new Date().toISOString(),
       exportedBy:currentUserProfile?.email||auth.currentUser?.email||"",
       plants:plantsSnap.docs.map(d=>({docId:d.id,...d.data()})),
       plantVersions:versionsSnap.docs.map(d=>({docId:d.id,...d.data()})),
-      activityLogs:logsSnap.docs.map(d=>({docId:d.id,...d.data()}))
+      activityLogs:logsSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      counters:countersSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      deletionRequests:requestsSnap.docs.map(d=>({docId:d.id,...d.data()}))
     };
     downloadBlob(`mongkol-mai-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(payload,null,2),"application/json;charset=utf-8");
     toast("สร้างไฟล์ Backup JSON เรียบร้อยแล้ว");
@@ -1222,12 +1336,14 @@ async function exportFullBackupXlsx(){
   if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้น");return;}
   if(typeof XLSX==="undefined"){toast("โหลด Excel ไม่สำเร็จ");return;}
   try{
-    const [ps,vs,ls]=await Promise.all([db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get()]);
+    const [ps,vs,ls,cs,rs]=await Promise.all([db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get()]);
     const wb=XLSX.utils.book_new(), labels=fieldLabelMap();
     const plantRows=ps.docs.map(d=>{const p={docId:d.id,...d.data()},o={ID:p.id,"หมวดหมู่":CATEGORIES.find(c=>c.code===p.categoryCode)?.name||""};Object.keys(labels).forEach(k=>o[labels[k]]=formatDetailValue(p[k]??""));o["สถานะ"]=p.isDeleted?"ถังขยะ":"ใช้งาน";o["วันที่ลงข้อมูล"]=formatDate(p.createdAt);o["ผู้ลงข้อมูล"]=p.createdByName||p.createdByEmail||"";o["แก้ไขล่าสุด"]=formatDate(p.updatedAt);o["ผู้แก้ไขล่าสุด"]=p.updatedByName||p.updatedByEmail||"";return o;});
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(plantRows),"Plants");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(vs.docs.map(d=>{const x=d.data();return {plantId:x.plantId,action:x.action,changedBy:x.changedByName||x.changedByEmail||"",createdAt:formatDate(x.createdAt),snapshot:JSON.stringify(x.snapshot||{})};})),"VersionHistory");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ls.docs.map(d=>{const x=d.data();return {plantId:x.plantId,plantName:x.plantName,action:x.action,user:x.userName||x.userEmail||"",createdAt:formatDate(x.createdAt)};})),"ActivityLogs");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(cs.docs.map(d=>{const x=d.data();return {categoryCode:d.id,count:x.count||0,last:x.last||0,updatedAt:formatDate(x.updatedAt)};})),"Counters");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rs.docs.map(d=>{const x=d.data();return {plantId:x.plantId,status:x.status,owner:x.plantOwnerName||x.plantOwnerEmail||"",requestedBy:x.requestedByName||x.requestedByEmail||"",createdAt:formatDate(x.createdAt)};})),"DeletionRequests");
     XLSX.writeFile(wb,`mongkol-mai-full-backup-${new Date().toISOString().slice(0,10)}.xlsx`);
     toast("สร้างไฟล์ Backup Excel เรียบร้อยแล้ว");
   }catch(err){console.error(err);toast("สร้าง Backup Excel ไม่สำเร็จ");}
@@ -1268,18 +1384,26 @@ function openHelp(){
         </div>
 
         <div class="help-grid">
-          <article class="help-card"><div class="help-icon">🌱</div><div><h3>เลือกหมวดหมู่และรหัส</h3><p>เลือกหมวดการเจริญเติบโต A–H ระบบจะแนะนำรหัสถัดไป เช่น A01, A02 และกำหนดรหัสจริงเมื่อบันทึกเข้าสู่ระบบ</p></div></article>
-          <article class="help-card"><div class="help-icon">💾</div><div><h3>สำรองข้อมูลอัตโนมัติ</h3><p>ระหว่างกรอกข้อมูล ระบบจะสำรองข้อมูลที่มีการเปลี่ยนแปลงลงพื้นที่ข้อมูลสำรองของบัญชีคุณโดยอัตโนมัติหลังหยุดพิมพ์ชั่วครู่ และยังมีปุ่ม “สำรองข้อมูล” สำหรับสั่งเอง</p></div></article>
-          <article class="help-card"><div class="help-icon">📌</div><div><h3>กรอกข้อมูลต่อ</h3><p>หน้าแรกมี “กรอกข้อมูลต่อ” แสดงชื่อสำรอง หมวดหมู่ ชื่อพืช รหัสที่คาดการณ์ และเวลาสำรอง คุณสามารถกดกลับมากรอกต่อได้หลังรีเฟรชหรือกลับเข้าระบบใหม่</p></div></article>
-          <article class="help-card"><div class="help-icon">🗂️</div><div><h3>บันทึกข้อมูลใหม่ / ต่อข้อมูลเดิม</h3><p>เมื่อกดหมวดหมู่ ระบบจะให้เลือกเริ่มข้อมูลใหม่โดยไม่ลบแบบร่างเดิม หรือเลือกข้อมูลสำรองที่ต้องการกรอกต่อ</p></div></article>
-          <article class="help-card"><div class="help-icon">⚠️</div><div><h3>ข้อมูลไม่ครบก็ยืนยันบันทึกได้</h3><p>ระบบจะบอกว่าช่องใดว่างอยู่ก่อนบันทึก คุณเลือกกลับไปกรอกต่อเพื่อกระโดดไปยังช่องแรกที่ยังว่าง หรือยืนยันบันทึกทั้งที่ข้อมูลยังไม่ครบได้</p></div></article>
-          <article class="help-card"><div class="help-icon">☁️</div><div><h3>ยืนยันก่อนขึ้นระบบ</h3><p>ก่อนบันทึกจริงจะมีหน้าต่างยืนยัน และระหว่างบันทึกจะแสดงความคืบหน้า เพื่อให้ทราบว่าระบบกำลังเขียนข้อมูลลง Cloud Firestore</p></div></article>
-          <article class="help-card"><div class="help-icon">🔎</div><div><h3>คลังข้อมูล</h3><p>ค้นหาได้จากข้อมูลหลายช่องและใช้ตัวกรองประเภท การดูแล แสง น้ำ พื้นที่ และความเหมาะสม เปิดดูรายละเอียดของต้นไม้ได้จากปุ่ม “ดูข้อมูล”</p></div></article>
-          <article class="help-card"><div class="help-icon">✏️</div><div><h3>แก้ไขและลบข้อมูล</h3><p>เฉพาะ Admin เท่านั้นที่สามารถแก้ไขหรือลบข้อมูลหลักได้ การลบมีการยืนยันซ้ำเพื่อป้องกันการลบโดยไม่ตั้งใจ</p></div></article>
-          <article class="help-card"><div class="help-icon">📤</div><div><h3>ส่งออกข้อมูล</h3><p>เลือกข้อมูลแล้วดาวน์โหลดเป็น Excel (.xlsx), CSV (.csv) หรือ JSON (.json) ได้ ข้อมูลที่ส่งออกมาจาก Cloud Firestore และไม่กระทบข้อมูลต้นฉบับ</p></div></article>
-          <article class="help-card"><div class="help-icon">🔐</div><div><h3>ความปลอดภัยและสิทธิ์</h3><p>สิทธิ์สำคัญถูกตรวจสอบที่ Firestore Rules ไม่ใช่แค่การซ่อนปุ่มบนหน้าเว็บ จึงควรเก็บบัญชีและรหัสผ่านของตนเองไว้เป็นความลับ</p></div></article>
-          <article class="help-card"><div class="help-icon">📱</div><div><h3>การใช้งานบนโทรศัพท์</h3><p>หน้าเว็บรองรับหน้าจอมือถือ โดยเฉพาะคลังข้อมูลและตัวกรอง หากข้อมูลไม่อัปเดตให้ลองรีเฟรชหน้าใหม่หรือเปิดแท็บใหม่</p></div></article>
-          <article class="help-card"><div class="help-icon">🌐</div><div><h3>การเชื่อมต่ออินเทอร์เน็ต</h3><p>การสำรองบน Cloud และการบันทึกเข้าระบบต้องใช้อินเทอร์เน็ต หากการสำรองล้มเหลว ให้ตรวจสอบการเชื่อมต่อก่อนปิดหน้า</p></div></article>
+          <article class="help-card"><div class="help-icon">🌱</div><div><h3>เลือกหมวดหมู่และรหัส</h3><p>เลือกหมวดการเจริญเติบโต A–H ระบบจะแนะนำรหัสถัดไป เช่น A01, A02 และรองรับการกำหนดรหัสเอง โดยรหัสต้องขึ้นต้นด้วยตัวอักษรหมวดเดียวกันและห้ามซ้ำ</p></div></article>
+          <article class="help-card"><div class="help-icon">💾</div><div><h3>สำรองข้อมูลอัตโนมัติ</h3><p>ระหว่างกรอกข้อมูล ระบบจะสำรองแบบร่างของบัญชีคุณอัตโนมัติหลังหยุดพิมพ์ และมีปุ่มสำรองด้วยตนเองเพื่อเก็บงานทันที</p></div></article>
+          <article class="help-card"><div class="help-icon">📌</div><div><h3>กรอกข้อมูลต่อ</h3><p>หน้าแรกจะแสดงแบบร่างของบัญชีปัจจุบัน คุณสามารถกลับมากรอกต่อหลังรีเฟรชหรือเข้าสู่ระบบใหม่ได้ โดยแบบร่างของแต่ละบัญชีแยกจากกัน</p></div></article>
+          <article class="help-card"><div class="help-icon">🗂️</div><div><h3>บันทึกข้อมูลใหม่ / ต่อข้อมูลเดิม</h3><p>เมื่อเลือกหมวดหมู่ ระบบให้เลือกเริ่มรายการใหม่หรือเลือกแบบร่างเดิม แบบร่างเก่าจะไม่ถูกลบเมื่อเริ่มรายการใหม่</p></div></article>
+          <article class="help-card"><div class="help-icon">⚠️</div><div><h3>ข้อมูลไม่ครบก็ยืนยันบันทึกได้</h3><p>ก่อนบันทึกระบบจะแสดงรายการช่องที่ยังว่าง คุณเลือกกลับไปกรอกต่อและกระโดดไปช่องแรกที่ขาด หรือยืนยันบันทึกทั้งที่ข้อมูลยังไม่ครบได้</p></div></article>
+          <article class="help-card"><div class="help-icon">☁️</div><div><h3>ยืนยันและแสดงความคืบหน้า</h3><p>การบันทึกจริงมีการยืนยันอีกครั้งและแสดงสถานะการทำงานระหว่างเขียนข้อมูลลง Firestore เพื่อลดความเสี่ยงจากการปิดหน้าโดยไม่ตั้งใจ</p></div></article>
+          <article class="help-card"><div class="help-icon">🔎</div><div><h3>คลังข้อมูลและ Smart Search</h3><p>ค้นหาได้จากรหัส ชื่อไทย ชื่อวิทยาศาสตร์ ชื่ออังกฤษ ชื่อท้องถิ่น วงศ์พืช ลักษณะ ความเชื่อ การดูแล และข้อมูลสำหรับระบบแนะนำ พร้อมตัวกรองประเภท การดูแล แสง น้ำ พื้นที่ มือใหม่ สัตว์เลี้ยง และพื้นที่จำกัด</p></div></article>
+          <article class="help-card"><div class="help-icon">✏️</div><div><h3>Admin แก้ไขข้อมูลของทุกคน</h3><p>Admin สามารถแก้ไขข้อมูลพืชได้ทุกระเบียน ไม่ว่าจะเป็นข้อมูลที่ Admin คนอื่นหรือสมาชิกเป็นผู้นำเข้า ระบบจะเก็บผู้ลงข้อมูลเดิมและผู้แก้ไขล่าสุดแยกกัน</p></div></article>
+          <article class="help-card"><div class="help-icon">🧾</div><div><h3>Version History</h3><p>ก่อนแก้ไข ระบบจะเก็บ Snapshot รุ่นเดิมไว้แบบแก้ไขหรือลบไม่ได้ Admin สามารถเปิดดูประวัติรุ่นและตรวจสอบว่าใครเป็นผู้แก้ไข</p></div></article>
+          <article class="help-card"><div class="help-icon">📝</div><div><h3>Activity History</h3><p>ระบบบันทึกกิจกรรม เช่น เพิ่ม แก้ไข ย้ายเข้าถังขยะ กู้คืน ลบถาวร และส่งคำขอลบ พร้อมผู้ใช้งานและเวลา เพื่อใช้ตรวจสอบย้อนหลัง</p></div></article>
+          <article class="help-card"><div class="help-icon">🗑️</div><div><h3>ถังขยะและ Soft Delete</h3><p>การลบข้อมูลหลักจะย้ายเข้าถังขยะก่อน ข้อมูลยังสามารถกู้คืนได้ การลบถาวรเป็นการลบออกจาก Firestore และไม่สามารถกู้คืนจากถังขยะได้</p></div></article>
+          <article class="help-card"><div class="help-icon">🔢</div><div><h3>Counters ของแต่ละหมวด</h3><p>แต่ละหมวด A–H มีค่า count สำหรับจำนวนข้อมูลที่ใช้งานอยู่ และค่า last สำหรับเลข ID สูงสุด เมื่อเพิ่มข้อมูล count จะ +1 เมื่อลบเข้าถังขยะ count จะ −1 และเมื่อกู้คืนจะ +1 โดยลบถาวรจะไม่ลดซ้ำ</p></div></article>
+          <article class="help-card"><div class="help-icon">🛠️</div><div><h3>ตรวจสอบ / ซ่อม Counters</h3><p>Admin สามารถตรวจสอบจำนวนจริงจาก collection plants แล้วเขียนค่า count และ last กลับไปยัง counters ทั้ง 8 หมวด เหมาะสำหรับแก้ไขฐานข้อมูลเก่าหรือกรณีค่าจำนวนคลาดเคลื่อน</p></div></article>
+          <article class="help-card"><div class="help-icon">📤</div><div><h3>ส่งออกข้อมูล</h3><p>เลือกข้อมูลแล้วส่งออกเป็น Excel (.xlsx), CSV (.csv) หรือ JSON (.json) ได้ ข้อมูลที่ส่งออกมาจาก Firestore และไม่กระทบข้อมูลต้นฉบับ</p></div></article>
+          <article class="help-card"><div class="help-icon">💾</div><div><h3>Admin Backup</h3><p>สำรองฐานข้อมูลเป็น Excel หรือ JSON โดยรวม Plants, Version History, Activity Logs, Counters และคำขอลบ เพื่อใช้เก็บหลักฐานและตรวจสอบระบบภายหลัง</p></div></article>
+          <article class="help-card"><div class="help-icon">👥</div><div><h3>สิทธิ์ Admin / Member</h3><p>Admin เพิ่ม แก้ไข ลบ กู้คืน ดูประวัติ และสำรองฐานข้อมูลได้ ส่วน Member ดู ค้นหา และส่งออกข้อมูลได้ แต่ไม่สามารถแก้ไขฐานข้อมูลหลัก</p></div></article>
+          <article class="help-card"><div class="help-icon">✉️</div><div><h3>คำขอลบข้อมูลของผู้อื่น</h3><p>หากข้อมูลเป็นของผู้ใช้คนอื่น ระบบจะไม่ลบทันที แต่สร้าง Deletion Request และเตรียมอีเมลถึงเจ้าของข้อมูลเพื่อให้ตรวจสอบก่อน</p></div></article>
+          <article class="help-card"><div class="help-icon">🔐</div><div><h3>ความปลอดภัยและ Firestore Rules</h3><p>สิทธิ์สำคัญตรวจสอบที่ Firestore Rules ไม่ใช่เพียงการซ่อนปุ่มบนหน้าเว็บ หลังแก้ Rules ต้อง Deploy Rules ใหม่ก่อนสิทธิ์จะมีผลจริง</p></div></article>
+          <article class="help-card"><div class="help-icon">📱</div><div><h3>การใช้งานบนโทรศัพท์</h3><p>รองรับหน้าจอมือถือและตัวกรองแบบ responsive หากข้อมูลไม่อัปเดตให้รีเฟรชหน้าและตรวจสอบอินเทอร์เน็ต</p></div></article>
+          <article class="help-card"><div class="help-icon">🌐</div><div><h3>การเชื่อมต่ออินเทอร์เน็ต</h3><p>การอ่านและเขียน Cloud Firestore ต้องใช้อินเทอร์เน็ต หากบันทึกหรือสำรองไม่สำเร็จให้ตรวจสอบการเชื่อมต่อก่อนปิดหน้า</p></div></article>
         </div>
 
         <div class="help-footer">
@@ -1301,7 +1425,7 @@ function fieldLabelMap(){const m={};FIELDS.forEach(([s,fs])=>fs.forEach(([k,l])=
 function buildExportTree(){
   const wrap=document.getElementById("exportTree");
   wrap.innerHTML=CATEGORIES.map(c=>{
-    const ps=plants.filter(p=>p.categoryCode===c.code);
+    const ps=plants.filter(p=>p.categoryCode===c.code && !p.isDeleted);
     return `<div class="export-cat"><label class="export-cat-title"><input type="checkbox" onchange="toggleCategoryExport('${c.code}',this.checked)"> ${c.icon} ${c.name} <span style="margin-left:auto;color:#839087;font-size:11px">${ps.length}</span></label>
       <div class="export-plants">${ps.map(p=>`<label><input type="checkbox" class="export-item" value="${escAttr(p.id)}" ${exportSelected.has(p.id)?"checked":""} onchange="toggleExport('${escAttr(p.id)}',this.checked)"> ${esc(p.id)} — ${esc(p.thaiName)}</label>`).join("")}</div>
     </div>`;
@@ -1316,7 +1440,7 @@ function safeSheetName(s){return String(s).replace(/[\\/?*\[\]:]/g," ").slice(0,
 function exportXlsx(){
   if(!exportSelected.size){toast("กรุณาเลือกข้อมูลที่ต้องการส่งออกก่อน");return}
   if(typeof XLSX==="undefined"){toast("โหลดตัวสร้าง Excel ไม่สำเร็จ กรุณาเชื่อมต่ออินเทอร์เน็ตแล้วลองใหม่");return}
-  const selected=plants.filter(p=>exportSelected.has(p.id)); const wb=XLSX.utils.book_new(); const labels=fieldLabelMap();
+  const selected=plants.filter(p=>exportSelected.has(p.id) && !p.isDeleted); const wb=XLSX.utils.book_new(); const labels=fieldLabelMap();
   CATEGORIES.forEach(c=>{
     const rows=selected.filter(p=>p.categoryCode===c.code);
     if(!rows.length)return;
@@ -1341,7 +1465,7 @@ function exportXlsx(){
 }
 
 function getExportRows(){
-  const selected=plants.filter(p=>exportSelected.has(p.id));
+  const selected=plants.filter(p=>exportSelected.has(p.id) && !p.isDeleted);
   const labels=fieldLabelMap();
   return selected.map(p=>{
     const row={ID:p.id,"หมวดหมู่":CATEGORIES.find(c=>c.code===p.categoryCode)?.name||""};
@@ -1386,7 +1510,7 @@ function exportCsv(){
 
 function exportJson(){
   if(!exportSelected.size){toast("กรุณาเลือกข้อมูลที่ต้องการส่งออกก่อน");return;}
-  const selected=plants.filter(p=>exportSelected.has(p.id)).map(p=>{
+  const selected=plants.filter(p=>exportSelected.has(p.id) && !p.isDeleted).map(p=>{
     const copy={...p};
     delete copy.docId;
     ["createdAt","updatedAt"].forEach(k=>{
