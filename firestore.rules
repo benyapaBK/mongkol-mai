@@ -147,6 +147,76 @@ service cloud.firestore {
     }
 
 
+
+
+
+    // =========================================
+    // PLANT VERSION HISTORY
+    // =========================================
+    match /plantVersions/{versionId} {
+      // เฉพาะ Admin ดูประวัติรุ่นข้อมูลได้
+      allow read: if isAdmin();
+
+      // เฉพาะ Admin สร้าง Version snapshot
+      allow create: if isAdmin()
+                    && request.resource.data.changedBy == request.auth.uid;
+
+      // ห้ามแก้/ลบ Version เพื่อรักษาประวัติ
+      allow update, delete: if false;
+    }
+
+    // =========================================
+    // SAVED DRAFTS / BACKUPS
+    // =========================================
+
+    match /drafts/{draftId} {
+      // แต่ละบัญชีเห็นเฉพาะข้อมูลสำรองของตัวเอง
+      allow read: if signedIn()
+                  && resource.data.userId == request.auth.uid;
+
+      // สร้างได้เฉพาะแบบร่างที่เป็นของผู้สร้างเอง
+      allow create: if signedIn()
+                    && request.resource.data.userId == request.auth.uid;
+
+      // แก้ไข/อัปเดตได้เฉพาะเจ้าของ
+      allow update: if signedIn()
+                    && resource.data.userId == request.auth.uid
+                    && request.resource.data.userId == request.auth.uid;
+
+      // ลบได้เฉพาะเจ้าของ
+      allow delete: if signedIn()
+                    && resource.data.userId == request.auth.uid;
+    }
+
+
+    // =========================================
+    // DELETION REQUESTS
+    // =========================================
+    match /deletionRequests/{requestId} {
+      // Admin/ผู้ขอ และเจ้าของข้อมูลอ่านคำขอที่เกี่ยวข้องได้
+      allow read: if signedIn()
+                  && (
+                    isAdmin()
+                    || resource.data.requestedBy == request.auth.uid
+                    || resource.data.plantOwnerId == request.auth.uid
+                  );
+
+      // เฉพาะ Admin ส่งคำขอลบข้อมูลของผู้อื่น
+      allow create: if isAdmin()
+                    && request.resource.data.requestedBy == request.auth.uid
+                    && request.resource.data.status == "pending_owner_review";
+
+      // เจ้าของข้อมูลเปลี่ยนสถานะได้เฉพาะ approved/declined
+      allow update: if signedIn()
+                    && resource.data.plantOwnerId == request.auth.uid
+                    && request.resource.data.plantOwnerId == resource.data.plantOwnerId
+                    && request.resource.data.requestedBy == resource.data.requestedBy
+                    && request.resource.data.status in ["approved","declined"];
+
+      // ไม่อนุญาตให้ลบคำขอ เพื่อเก็บหลักฐานการร้องขอ
+      allow delete: if false;
+    }
+
     // =========================================
     // DEFAULT DENY
     // =========================================

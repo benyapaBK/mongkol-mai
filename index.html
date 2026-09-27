@@ -125,6 +125,18 @@
 
         <div id="categoryPicker" class="category-grid"></div>
 
+        <section id="draftBoard" class="draft-board">
+          <div class="draft-board-head">
+            <div>
+              <span class="eyebrow">SAVED DRAFTS</span>
+              <h2>กรอกข้อมูลต่อ</h2>
+              <p>ข้อมูลสำรองของบัญชีนี้จะถูกแยกจากผู้ใช้อื่น และสามารถกลับมากรอกต่อได้แม้รีเฟรชหน้า</p>
+            </div>
+            <span id="draftCountBadge" class="draft-count-badge">0 รายการ</span>
+          </div>
+          <div id="draftBoardList" class="draft-board-list"></div>
+        </section>
+
         <div id="formWrap" class="form-panel hidden">
           <div class="form-head">
             <div>
@@ -134,15 +146,32 @@
             <button class="icon-btn" onclick="backToCategories()" title="ย้อนกลับ">←</button>
           </div>
           <div class="id-preview">
-            <div><span>รหัสรายการ</span><strong id="nextId">A01</strong></div>
+            <div class="id-editor-box">
+              <span>รหัสรายการ</span>
+              <div class="id-input-wrap">
+                <input id="nextId" type="text" inputmode="text" maxlength="8" value="A01" aria-label="รหัสรายการ">
+                <span class="id-auto-badge">AUTO</span>
+              </div>
+              <small id="idEditHint">ระบบรันรหัสให้อัตโนมัติ คุณสามารถแก้รหัสได้ โดยต้องใช้ตัวอักษรหมวดเดียวกัน เช่น A01</small>
+            </div>
             <div><span>หมวดหมู่</span><strong id="selectedCategoryName">ไม้ยืนต้น</strong></div>
+          </div>
+
+          <div class="draft-name-bar">
+            <div>
+              <label for="draftName">ชื่อการสำรองข้อมูล</label>
+              <p>ตั้งชื่อเพื่อกลับมาหาข้อมูลชุดนี้ได้ง่าย เช่น “มะลิบ้านยาย”</p>
+            </div>
+            <input id="draftName" type="text" maxlength="100" placeholder="ตั้งชื่อการสำรองข้อมูล">
+            <span id="draftSaveStatus" class="draft-save-status">ยังไม่มีการสำรอง</span>
           </div>
 
           <form id="plantForm" novalidate></form>
 
           <div class="form-actions">
-            <button type="button" class="btn ghost" onclick="backToCategories()">ยกเลิก / ย้อนกลับ</button>
-            <button type="button" class="btn primary" onclick="savePlant()">✓ บันทึกข้อมูล</button>
+            <button type="button" class="btn ghost" onclick="backToCategories()">← ย้อนกลับ</button>
+            <button type="button" class="btn ghost" onclick="manualSaveDraft()">💾 สำรองข้อมูล</button>
+            <button type="button" class="btn primary" onclick="savePlant()">✓ บันทึกเข้าสู่ระบบ</button>
           </div>
         </div>
       </section>
@@ -155,7 +184,10 @@
             <h1>คลังข้อมูลพันธุ์ไม้</h1>
             <p>ค้นหาพันธุ์ไม้จากข้อมูลทั้งหมด พร้อมกรองตามประเภท ลักษณะการดูแล และความเหมาะสม</p>
           </div>
-          <button id="libraryAddButton" class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูล</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+            <button id="libraryTrashButton" class="btn ghost" onclick="openTrash()">🗑 ถังขยะ</button>
+            <button id="libraryAddButton" class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูล</button>
+          </div>
         </div>
 
         <section class="library-search-panel">
@@ -281,6 +313,15 @@
                  <button class="btn primary large" onclick="exportXlsx()">⇩ Excel (.xlsx)</button>
                  <button class="btn ghost large" onclick="exportCsv()">⇩ CSV (.csv)</button>
                  <button class="btn ghost large" onclick="exportJson()">⇩ JSON (.json)</button>
+               </div>
+               <div class="backup-card" style="margin-top:18px;padding:18px;border:1px solid rgba(44,74,57,.14);border-radius:16px;background:#f8faf6">
+                 <span class="eyebrow">ADMIN BACKUP</span>
+                 <h3>สำรองฐานข้อมูลทั้งหมด</h3>
+                 <p>สำรองข้อมูลพืช ประวัติ Version และ Activity Logs สำหรับเก็บเป็นไฟล์ภายนอก</p>
+                 <div class="export-format-actions">
+                   <button class="btn primary" onclick="exportFullBackupXlsx()">สำรองทั้งหมดเป็น Excel</button>
+                   <button class="btn ghost" onclick="exportFullBackupJson()">สำรองทั้งหมดเป็น JSON</button>
+                 </div>
                </div>
             </div>
           </section>
