@@ -3,76 +3,516 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // =========================================================
+    // 01. ฟังก์ชันตรวจสอบผู้ใช้งาน
+    // =========================================================
+
+    // ตรวจว่าผู้ใช้ Login Firebase แล้วหรือไม่
     function signedIn() {
       return request.auth != null;
     }
 
+
+    // ตรวจว่าผู้ใช้เป็น Admin หรือไม่
+    //
+    // ระบบจะไปตรวจ users/{uid}
+    // และต้องมี role = "admin"
     function isAdmin() {
       return signedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin";
+        && exists(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        )
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.role == "admin";
     }
 
+    // Admin ผู้รับแบบฟอร์มหลักเพียงบัญชีเดียว
+    // ต้องเป็น Admin + Display Name + Email ตรงตามที่กำหนด
+    function isSupportAdmin() {
+      return isAdmin()
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.displayName == "benyapabaibuaw"
+        && get(
+          /databases/$(database)/documents/users/$(request.auth.uid)
+        ).data.email == "benyapabaibuaw@gmail.com";
+    }
+
+    function isRoleManager() { return isSupportAdmin(); }
+
+
+    // =========================================================
+    // 02. USERS
+    // =========================================================
+
     match /users/{uid} {
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
-      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.role == "member";
-      allow update: if signedIn() && request.auth.uid == uid && request.resource.data.role == resource.data.role;
-      allow update: if isAdmin();
+
+      // สมาชิกสามารถดูข้อมูลของตัวเอง
+      // Admin สามารถดูข้อมูลสมาชิกได้ทั้งหมด
+      allow read: if signedIn()
+                  && (
+                    request.auth.uid == uid
+                    || isAdmin()
+                  );
+
+
+      // ผู้สมัครสร้างบัญชีของตัวเองได้
+      // และบังคับให้บัญชีใหม่เป็น Member เท่านั้น
+      //
+      // ป้องกันไม่ให้ผู้สมัครสร้างบัญชีตัวเองเป็น Admin
+      allow create: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role == "member";
+
+
+      // Member สามารถแก้ข้อมูลของตัวเอง
+      // แต่ห้ามเปลี่ยน role ของตัวเอง
+      allow update: if signedIn()
+                    && request.auth.uid == uid
+                    && request.resource.data.role
+                       == resource.data.role
+                    && request.resource.data.email
+                       == resource.data.email;
+
+
+      // เฉพาะ BENYAPA เท่านั้นที่เปลี่ยน Role ของผู้อื่นได้
+      allow update: if isRoleManager()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["role","updatedAt"]);
+
+
+      // เฉพาะ Admin เท่านั้นที่ลบสมาชิกได้
       allow delete: if isAdmin();
     }
 
+
+    // =========================================================
+    // 03. PLANTS — ฐานข้อมูลต้นไม้
+    // =========================================================
+
     match /plants/{plantId} {
-      // Admin และ Member อ่าน/ค้นหา/ส่งออกได้
+
+      // Member และ Admin สามารถดู / ค้นหา / ส่งออกข้อมูลได้
       allow read: if signedIn();
-      // เพิ่ม/แก้ไข/ลบข้อมูลหลักเฉพาะ Admin
-      // Admin แก้ข้อมูลของผู้ใช้คนอื่นได้ด้วย ไม่มีเงื่อนไข createdBy
-      allow create, update, delete: if isAdmin();
+
+
+      // เฉพาะ Admin สามารถเพิ่มข้อมูลต้นไม้
+      allow create: if isAdmin();
+
+
+      // เฉพาะ Admin สามารถแก้ไขข้อมูลต้นไม้
+      //
+      // ไม่มีการตรวจ createdBy
+      // ดังนั้น Admin สามารถแก้ข้อมูลที่ Admin คนอื่น
+      // หรือผู้ใช้อื่นเคยสร้างไว้ได้
+      allow update: if isAdmin();
+
+
+      // เฉพาะ Admin สามารถลบข้อมูลต้นไม้
+      allow delete: if isAdmin();
     }
 
+
+    // =========================================================
+    // 04. COUNTERS — ตัวนับจำนวนข้อมูล A-H
+    // =========================================================
+
     match /counters/{counterId} {
-      // Counters เป็นข้อมูลควบคุมฐานข้อมูล ไม่เปิดให้ Member แก้ไข
+
+      // Counter เป็นข้อมูลควบคุมระบบ
+      // Member ห้ามแก้ไข
+      // Admin สามารถอ่านและเขียนได้
       allow read, write: if isAdmin();
     }
 
+
+    // =========================================================
+    // 05. ACTIVITY LOGS — ประวัติการใช้งาน
+    // =========================================================
+
     match /activityLogs/{logId} {
+
+      // เฉพาะ Admin สามารถดู Activity Log
       allow read: if isAdmin();
-      allow create: if isAdmin()
-                    && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
-    }
 
-    match /plantVersions/{versionId} {
-      allow read: if isAdmin();
-      allow create: if isAdmin()
-                    && request.resource.data.changedBy == request.auth.uid;
-      allow update, delete: if false;
-    }
 
-    match /drafts/{draftId} {
-      allow read: if signedIn() && resource.data.userId == request.auth.uid;
-      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if signedIn()
-                    && resource.data.userId == request.auth.uid
-                    && request.resource.data.userId == request.auth.uid;
-      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
-    }
-
-    match /deletionRequests/{requestId} {
-      allow read: if signedIn()
-                  && (isAdmin()
-                      || resource.data.requestedBy == request.auth.uid
-                      || resource.data.plantOwnerId == request.auth.uid);
+      // Admin สามารถสร้าง Log ได้
+      //
+      // userId ใน Log ต้องตรงกับผู้ที่ Login อยู่
+      // ป้องกันการปลอมชื่อผู้ทำรายการ
       allow create: if isAdmin()
-                    && request.resource.data.requestedBy == request.auth.uid
-                    && request.resource.data.status == "pending_owner_review";
-      allow update: if signedIn()
-                    && resource.data.plantOwnerId == request.auth.uid
-                    && request.resource.data.plantOwnerId == resource.data.plantOwnerId
-                    && request.resource.data.requestedBy == resource.data.requestedBy
-                    && request.resource.data.status in ["approved", "declined"];
+                    && request.resource.data.userId
+                       == request.auth.uid;
+
+
+      // ประวัติการใช้งานไม่ควรถูกแก้ไข
+      allow update: if false;
+
+
+      // ประวัติการใช้งานไม่ควรถูกลบ
       allow delete: if false;
     }
 
+
+    // =========================================================
+    // 06. PLANT VERSION HISTORY
+    // =========================================================
+
+    match /plantVersions/{versionId} {
+
+      // เฉพาะ Admin สามารถดูประวัติ Version
+      allow read: if isAdmin();
+
+
+      // Admin สามารถสร้าง Version ใหม่
+      //
+      // changedBy ต้องตรงกับ Admin ที่กำลัง Login
+      allow create: if isAdmin()
+                    && request.resource.data.changedBy
+                       == request.auth.uid;
+
+
+      // Version History เป็นหลักฐานย้อนหลัง
+      // จึงห้ามแก้ไข
+      allow update: if false;
+
+
+      // และห้ามลบ
+      allow delete: if false;
+    }
+
+
+    // =========================================================
+    // 07. DRAFTS — แบบร่างข้อมูล
+    // =========================================================
+
+    match /drafts/{draftId} {
+
+      // ผู้ใช้เห็นเฉพาะ Draft ของตัวเอง
+      allow read: if signedIn()
+                  && resource.data.userId
+                     == request.auth.uid;
+
+
+      // สร้าง Draft ได้เฉพาะของตัวเอง
+      allow create: if signedIn()
+                    && request.resource.data.userId
+                       == request.auth.uid;
+
+
+      // แก้ Draft ได้เฉพาะเจ้าของ
+      //
+      // ตรวจทั้งข้อมูลเดิมและข้อมูลใหม่
+      // เพื่อป้องกันการเปลี่ยนเจ้าของ Draft
+      allow update: if signedIn()
+                    && resource.data.userId
+                       == request.auth.uid
+                    && request.resource.data.userId
+                       == request.auth.uid;
+
+
+      // ลบ Draft ได้เฉพาะเจ้าของ
+      allow delete: if signedIn()
+                    && resource.data.userId
+                       == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // 08. ADMIN CHAT
+    // =========================================================
+
+    match /adminChatMessages/{messageId} {
+
+      // เฉพาะ Admin เท่านั้นที่เข้า Admin Chat
+      allow read: if isAdmin();
+
+
+      // Admin ส่งข้อความได้
+      //
+      // senderId ต้องเป็นตัวเอง
+      // ป้องกันการปลอมตัวเป็น Admin คนอื่น
+      allow create: if isAdmin()
+                    && request.resource.data.senderId
+                       == request.auth.uid;
+
+
+      // Admin สามารถแก้ไข/ลบเฉพาะข้อความของตัวเอง
+      allow update, delete: if isAdmin()
+                            && resource.data.senderId
+                               == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // 09. NOTIFICATIONS — การแจ้งเตือน
+    // =========================================================
+
+    match /notifications/{notificationId} {
+
+      // ผู้ใช้เห็นเฉพาะ Notification ของตัวเอง
+      allow read: if signedIn()
+                  && resource.data.userId
+                     == request.auth.uid;
+
+
+      // เฉพาะ Admin สามารถสร้าง Notification
+      allow create: if isAdmin();
+
+
+      // เจ้าของ Notification สามารถเปลี่ยนสถานะอ่าน
+      //
+      // อนุญาตให้เปลี่ยนเฉพาะ:
+      // read
+      // readAt
+      //
+      // ป้องกันการแก้ข้อความหรือเปลี่ยนเจ้าของ
+      allow update: if signedIn()
+                    && resource.data.userId
+                       == request.auth.uid
+                    && request.resource.data.userId
+                       == resource.data.userId
+                    && request.resource.data
+                         .diff(resource.data)
+                         .affectedKeys()
+                         .hasOnly([
+                           "read",
+                           "readAt"
+                         ]);
+
+
+      // เจ้าของ Notification ลบของตัวเองได้
+      allow delete: if signedIn()
+                    && resource.data.userId
+                       == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // 10. PLANT COMMENTS — ความคิดเห็นในข้อมูลพืช
+    // =========================================================
+
+    match /plantComments/{commentId} {
+
+      // เฉพาะ Admin สามารถดูความคิดเห็น
+      allow read: if isAdmin();
+
+
+      // Admin สร้างความคิดเห็นได้
+      //
+      // authorId ต้องตรงกับ Admin ที่ Login
+      allow create: if isAdmin()
+                    && request.resource.data.authorId
+                       == request.auth.uid;
+
+
+      // เจ้าของ Comment สามารถแก้ของตัวเอง
+      //
+      // ห้ามเปลี่ยน authorId
+      allow update: if isAdmin()
+                    && resource.data.authorId
+                       == request.auth.uid
+                    && request.resource.data.authorId
+                       == resource.data.authorId;
+
+
+      // เจ้าของ Comment สามารถลบของตัวเอง
+      allow delete: if isAdmin()
+                    && resource.data.authorId
+                       == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // 11. ADMIN TASKS — กระดานปักหมุดงาน
+    // =========================================================
+
+    match /adminTasks/{taskId} {
+
+      // Admin ทุกคนสามารถดูกระดานงานได้
+      allow read: if isAdmin();
+
+
+      // -------------------------------------------------------
+      // สร้างงานปักหมุด
+      // -------------------------------------------------------
+      //
+      // ผู้สร้างต้องเป็น Admin
+      // createdBy ต้องเป็นตัวเอง
+      // สถานะเริ่มต้นต้องเป็น in_progress
+      // assignee ต้องเป็น Admin จริง
+      allow create: if isAdmin()
+                    && request.resource.data.createdBy
+                       == request.auth.uid
+                    && request.resource.data.status
+                       == "in_progress"
+                    && exists(
+                      /databases/$(database)/documents/users/$(request.resource.data.assigneeId)
+                    )
+                    && get(
+                      /databases/$(database)/documents/users/$(request.resource.data.assigneeId)
+                    ).data.role == "admin";
+
+
+      // -------------------------------------------------------
+      // ผู้ปักหมุดแก้ไขงานของตัวเอง
+      // -------------------------------------------------------
+      //
+      // ผู้สร้างสามารถแก้:
+      // - รายละเอียด
+      // - จุดที่ต้องแก้
+      // - ผู้รับงาน
+      // - ข้อมูลอื่น ๆ
+      //
+      // แต่ไม่สามารถเปลี่ยนสถานะเป็น completed
+      allow update: if isAdmin()
+                    && resource.data.createdBy
+                       == request.auth.uid
+                    && request.resource.data.createdBy
+                       == resource.data.createdBy
+                    && request.resource.data.status
+                       == resource.data.status;
+
+
+      // -------------------------------------------------------
+      // ผู้ถูกมอบหมายกด "สำเร็จ"
+      // -------------------------------------------------------
+      //
+      // ทำได้เฉพาะ Admin ที่ถูกมอบหมาย
+      // และเปลี่ยนสถานะเป็น completed
+      //
+      // จำกัด field ที่เปลี่ยนได้
+      allow update: if isAdmin()
+                    && resource.data.assigneeId
+                       == request.auth.uid
+                    && request.resource.data.createdBy
+                       == resource.data.createdBy
+                    && request.resource.data.assigneeId
+                       == resource.data.assigneeId
+                    && request.resource.data.status
+                       == "completed"
+                    && request.resource.data
+                         .diff(resource.data)
+                         .affectedKeys()
+                         .hasOnly([
+                           "status",
+                           "completedBy",
+                           "completedByName",
+                           "completedAt",
+                           "updatedAt"
+                         ]);
+
+
+      // -------------------------------------------------------
+      // ลบงานปักหมุด
+      // -------------------------------------------------------
+      //
+      // เฉพาะผู้สร้าง Pin เท่านั้น
+      allow delete: if isAdmin()
+                    && resource.data.createdBy
+                       == request.auth.uid;
+    }
+
+
+    // =========================================================
+    // 12. DELETION REQUESTS
+    // =========================================================
+
+    match /deletionRequests/{requestId} {
+
+      // ผู้เกี่ยวข้องสามารถอ่านคำขอได้
+      //
+      // Admin
+      // ผู้ส่งคำขอ
+      // เจ้าของข้อมูล
+      allow read: if signedIn()
+                  && (
+                    isAdmin()
+                    || resource.data.requestedBy
+                       == request.auth.uid
+                    || resource.data.plantOwnerId
+                       == request.auth.uid
+                  );
+
+
+      // Admin สามารถสร้างคำขอลบข้อมูลของผู้อื่น
+      //
+      // requestedBy ต้องเป็น Admin คนที่ Login อยู่
+      // และสถานะเริ่มต้นต้องเป็น pending_owner_review
+      allow create: if isAdmin()
+                    && request.resource.data.requestedBy
+                       == request.auth.uid
+                    && request.resource.data.status
+                       == "pending_owner_review";
+
+
+      // เจ้าของข้อมูลสามารถตอบคำขอ
+      //
+      // ได้เพียง:
+      // approved
+      // declined
+      allow update: if signedIn()
+                    && resource.data.plantOwnerId
+                       == request.auth.uid
+                    && request.resource.data.plantOwnerId
+                       == resource.data.plantOwnerId
+                    && request.resource.data.requestedBy
+                       == resource.data.requestedBy
+                    && request.resource.data.status
+                       in [
+                         "approved",
+                         "declined"
+                       ];
+
+
+      // เก็บคำขอไว้เป็นประวัติ
+      // จึงไม่อนุญาตให้ลบ
+      allow delete: if false;
+    }
+
+
+
+    // =========================================================
+    // 13. SUPPORT REQUESTS — แบบฟอร์มช่วยเหลือ/แจ้งแก้ไข
+    // =========================================================
+    //
+    // Member และ Admin สามารถส่งแบบฟอร์มของตัวเองได้
+    // เช่น แจ้งปัญหา แจ้งแก้ไขข้อมูล ความคิดเห็น หรือขอเปลี่ยนอีเมล
+    //
+    // Admin สามารถอ่านแบบฟอร์มทั้งหมดได้
+    // เพื่อให้บัญชีผู้ดูแล BENYAPA รับเรื่องในหน้า Help Center
+    match /supportRequests/{requestId} {
+
+      // ผู้ใช้ที่ Login แล้วส่งแบบฟอร์มของตัวเองได้
+      // และบังคับ fromUid ต้องเป็นตัวเอง
+      allow create: if signedIn()
+                    && request.resource.data.fromUid
+                       == request.auth.uid
+                    && request.resource.data.targetUsername
+                       == "BENYAPA"
+                    && request.resource.data.targetEmail
+                       == "benyapabaibuaw@gmail.com"
+                    && request.resource.data.status
+                       == "new";
+
+      // เฉพาะ Admin ผู้รับแบบฟอร์มหลักเท่านั้นที่อ่านได้
+      allow read: if isSupportAdmin();
+
+      // เฉพาะ Admin ผู้รับแบบฟอร์มหลักเท่านั้นที่อัปเดตสถานะได้
+      allow update: if isSupportAdmin();
+
+      // ไม่ให้ผู้ใช้ลบแบบฟอร์ม เพื่อเก็บประวัติ
+      allow delete: if false;
+    }
+
+
+    // =========================================================
+    // 14. DEFAULT DENY
+    // =========================================================
+    //
+    // Collection อื่น ๆ ที่ไม่ได้ระบุไว้ด้านบน
+    // จะไม่สามารถอ่านหรือเขียนได้
+    //
     match /{document=**} {
       allow read, write: if false;
     }

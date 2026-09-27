@@ -13,3 +13,11 @@ Main fixes:
 3. Firestore onSnapshot automatically moves saved plants into the Library and category counts.
 4. Members are redirected to the Library after login.
 5. Added Help button in the header and Help Center modal.
+
+
+MONGKOL MAI UI 3.0
+- Midnight contrast refresh
+- Theme chooser: Default / Lavender / NaturSun / Midnight
+- Navigation layout: top bar / left sidebar
+- Support inbox restricted to BENYAPA (Display Name: benyapabaibuaw, Email: benyapabaibuaw@gmail.com)
+- Firestore Rules updated for support inbox recipient restriction

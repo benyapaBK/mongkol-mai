@@ -83,7 +83,7 @@
 
   <div id="appShell" class="app-shell hidden">
     <header class="topbar">
-      <div class="brand" onclick="showPage('entry')">
+      <div class="brand" onclick="showPage('home')">
         <div class="brand-mark">🌿</div>
         <div>
           <strong>มงคลไม้</strong>
@@ -91,20 +91,26 @@
         </div>
       </div>
       <nav class="main-nav">
-        <button data-page="entry" class="nav-btn active">＋ กรอกข้อมูล</button>
-        <button data-page="library" class="nav-btn">▦ คลังข้อมูล</button>
-        <button data-page="export" class="nav-btn">⇩ ส่งออกข้อมูล</button>
-        <button class="nav-btn help-nav-btn" type="button" onclick="openHelp()" title="วิธีใช้งานเว็บไซต์">? ช่วยเหลือ</button>
+        <button data-page="home" class="nav-btn active"><span class="nav-icon" aria-hidden="true">⌂</span><span>หน้าหลัก</span></button>
+        <button data-page="entry" class="nav-btn"><span class="nav-icon" aria-hidden="true">＋</span><span>กรอกข้อมูล</span></button>
+        <button data-page="library" class="nav-btn"><span class="nav-icon" aria-hidden="true">▦</span><span>คลังข้อมูล</span></button>
+        <button data-page="export" class="nav-btn"><span class="nav-icon" aria-hidden="true">⇩</span><span>ส่งออกข้อมูล</span></button>
+        <button data-page="chat" id="adminChatNav" class="nav-btn hidden"><span class="nav-icon nav-icon-emoji" aria-hidden="true">💬</span><span>Admin Chat</span></button>
+        <button class="nav-btn help-nav-btn" type="button" onclick="openHelp()" title="วิธีใช้งานเว็บไซต์"><span class="nav-icon" aria-hidden="true">?</span><span>ช่วยเหลือ</span></button>
       </nav>
+      <div class="nav-tools" aria-label="การแจ้งเตือนและธีม">
+        <button id="notificationNav" class="nav-btn notification-nav" type="button" onclick="openNotifications()" title="การแจ้งเตือน"><span class="nav-icon nav-icon-emoji" aria-hidden="true">🔔</span><span id="notificationBadge" class="notification-badge hidden">0</span></button>
+        <button id="themeMoonToggle" class="nav-btn theme-toggle-btn" type="button" onclick="toggleNightTheme()" title="สลับธีม Midnight"><span class="theme-icon" aria-hidden="true">🌙</span></button>
+      </div>
       <div class="user-area">
         <div class="user-chip">
-          <span class="user-avatar">👤</span>
+          <button id="userAvatarButton" class="user-avatar avatar-button" type="button" onclick="openProfileModal()" title="ตั้งค่า">👤</button>
           <div>
             <strong id="currentUsername">ผู้ใช้</strong>
             <small id="currentEmail"></small>
           </div>
         </div>
-        <button class="logout-btn" onclick="logout()" title="ออกจากระบบ">ออกจากระบบ</button>
+        <button class="logout-btn" onclick="openProfileMenu()" title="ตั้งค่าและออกจากระบบ">ตั้งค่า ▾</button>
       </div>
       <div class="storage-status" title="ข้อมูลจัดเก็บบน Cloud Firestore">
         <span class="status-dot"></span><span id="recordCount">0 รายการ</span>
@@ -112,8 +118,73 @@
     </header>
 
     <main>
+      <!-- HOME DASHBOARD -->
+      <section id="page-home" class="page active-page">
+        <div class="dashboard-hero">
+          <div>
+            <span class="eyebrow">MONGKOL MAI • TEAM DASHBOARD</span>
+            <h1>สวัสดี <em id="dashboardUserName">Admin</em> 👋</h1>
+            <p>ศูนย์กลางสำหรับติดตามฐานข้อมูล งานที่ปักหมุด การแจ้งเตือน และสิ่งที่ต้องดำเนินการต่อ</p>
+          </div>
+          <button class="btn primary" onclick="showPage('entry')">＋ เพิ่มข้อมูลพันธุ์ไม้</button>
+        </div>
+        <section class="dashboard-stats" id="dashboardStats"></section>
+        <section class="dashboard-card dashboard-quick-card">
+          <div class="dashboard-card-head dashboard-quick-head">
+            <div class="quick-title-inline">
+              <span class="eyebrow">QUICK ACTIONS</span>
+              <h2>⚡ ทางลัดสำหรับวันนี้</h2>
+            </div>
+            <p>เข้าถึงงานที่ต้องทำบ่อยได้จากหน้าแรก</p>
+          </div>
+          <div class="dashboard-quick-actions">
+            <button class="quick-action-card" onclick="continueLatestDraft()"><span>📝</span><strong>กรอกข้อมูลต่อ</strong><small id="dashboardDraftHint">เปิด Draft ล่าสุดของคุณ</small></button>
+            <button class="quick-action-card" onclick="showPage('library')"><span>📚</span><strong>เปิดคลังข้อมูล</strong><small>ค้นหาและตรวจข้อมูลพืช</small></button>
+            <button class="quick-action-card" onclick="showPage('chat')"><span>💬</span><strong>คุยกับทีม Admin</strong><small>เปิดห้องแชทของทีม</small></button>
+            <button class="quick-action-card" onclick="openHelp()"><span>❓</span><strong>เปิดศูนย์ช่วยเหลือ</strong><small>ค้นหาวิธีใช้งานหรือแจ้งปัญหา</small></button>
+          </div>
+        </section>
+        <section class="dashboard-workspace-grid">
+          <section class="dashboard-card dashboard-notification-card">
+            <div class="dashboard-card-head dashboard-notification-head">
+              <div>
+                <span class="eyebrow">NOTIFICATIONS</span>
+                <h2>🔔 การแจ้งเตือนล่าสุด</h2>
+                <p>รายการแจ้งเตือนของบัญชีคุณจะแสดงที่นี่ และอัปเดตแบบเรียลไทม์</p>
+              </div>
+              <button class="btn ghost small" onclick="openNotifications()">ดูทั้งหมด</button>
+            </div>
+            <div id="dashboardNotifications" class="dashboard-notification-list" aria-live="polite">
+              <div class="empty-state notification-empty">กำลังโหลดการแจ้งเตือน…</div>
+            </div>
+          </section>
+          <section class="dashboard-card team-activity-card">
+            <div class="dashboard-card-head">
+              <div><span class="eyebrow">TEAM ACTIVITY</span><h2>กิจกรรมล่าสุดของทีม</h2><p>ติดตามการเพิ่ม แก้ไข และการทำงานของ Admin แบบล่าสุด</p></div>
+              <button class="btn ghost small" onclick="openActivityLog()">ดูทั้งหมด</button>
+            </div>
+            <div id="dashboardTeamActivity" class="team-activity-list"></div>
+          </section>
+        </section>
+      </section>
+
+      <!-- ADMIN CHAT -->
+      <section id="page-chat" class="page">
+        <div class="page-heading">
+          <div><span class="eyebrow">ADMIN TEAM CHAT</span><h1>💬 ห้องแชท Admin</h1><p>Admin ทุกคนในระบบจะเข้าห้องนี้โดยอัตโนมัติ ไม่ต้องเชิญสมาชิกทีละคน</p></div>
+          <div class="admin-online-badge">🟢 <span id="adminCountLabel">0 Admin</span></div>
+        </div>
+        <div class="chat-layout">
+          <aside class="chat-members-card"><h3>👥 Admin ในห้อง</h3><div id="adminMembersList"></div></aside>
+          <section class="chat-card">
+            <div id="chatMessages" class="chat-messages"></div>
+            <form class="chat-composer" onsubmit="sendAdminChat(event)"><span id="chatComposerAvatar" class="chat-composer-avatar">👤</span><div class="chat-input-wrap"><input id="chatInput" maxlength="1000" autocomplete="off" placeholder="พิมพ์ข้อความถึงทีม Admin... ใช้ @ เพื่อ Mention" oninput="showMentionSuggestions()" required><div id="mentionSuggestions" class="mention-suggestions hidden"></div></div><button class="btn primary" type="submit">ส่ง</button></form>
+          </section>
+        </div>
+      </section>
+
       <!-- PAGE 1 -->
-      <section id="page-entry" class="page active-page">
+      <section id="page-entry" class="page">
         <div class="hero">
           <div>
             <span class="eyebrow">DATABASE ENTRY</span>
@@ -314,7 +385,7 @@
                  <button class="btn ghost large" onclick="exportCsv()">⇩ CSV (.csv)</button>
                  <button class="btn ghost large" onclick="exportJson()">⇩ JSON (.json)</button>
                </div>
-               <div class="backup-card" style="margin-top:18px;padding:18px;border:1px solid rgba(44,74,57,.14);border-radius:16px;background:#f8faf6">
+               <div id="adminBackupCard" class="backup-card">
                  <span class="eyebrow">ADMIN BACKUP</span>
                  <h3>สำรองฐานข้อมูลทั้งหมด</h3>
                  <p>สำรองข้อมูลพืช ประวัติ Version และ Activity Logs สำหรับเก็บเป็นไฟล์ภายนอก</p>
@@ -334,6 +405,7 @@
   <div id="toast" class="toast"></div>
   <div id="modalRoot"></div>
   <div id="helpRoot"></div>
+  <div id="chatContextMenu" class="chat-context-menu hidden"></div>
 
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>

@@ -52,8 +52,19 @@ let draftId = null;
 let draftAutosaveTimer = null;
 let draftSaving = false;
 let authMode = "login";
+let chatUnsubscribe = null;
+let notificationUnsubscribe = null;
+let taskUnsubscribe = null;
+let commentCache = {};
+let adminDirectory = [];
+let adminDirectoryUnsubscribe = null;
+let presenceTimer = null;
+let chatContextMenuEl = null;
+let supportRequestsUnsubscribe = null;
+let activityUnsubscribe = null;
 
 document.addEventListener("DOMContentLoaded", () => {
+  applyTheme(getSavedTheme(), false);
   initAuthUI();
   auth.onAuthStateChanged(handleAuthState);
 });
@@ -164,6 +175,13 @@ async function handleAuthState(user){
   if(!user){
     if(plantsUnsubscribe){plantsUnsubscribe();plantsUnsubscribe=null;}
     if(draftsUnsubscribe){draftsUnsubscribe();draftsUnsubscribe=null;}
+    if(chatUnsubscribe){chatUnsubscribe();chatUnsubscribe=null;}
+    if(notificationUnsubscribe){notificationUnsubscribe();notificationUnsubscribe=null;}
+    if(taskUnsubscribe){taskUnsubscribe();taskUnsubscribe=null;}
+    if(adminDirectoryUnsubscribe){adminDirectoryUnsubscribe();adminDirectoryUnsubscribe=null;}
+    if(supportRequestsUnsubscribe){supportRequestsUnsubscribe();supportRequestsUnsubscribe=null;}
+    if(activityUnsubscribe){activityUnsubscribe();activityUnsubscribe=null;}
+    if(presenceTimer){clearInterval(presenceTimer);presenceTimer=null;}
     plants=[];
     drafts=[];
     currentUserProfile=null;
@@ -186,8 +204,11 @@ async function handleAuthState(user){
       snap=await db.collection("users").doc(user.uid).get();
     }
     currentUserProfile={uid:user.uid,...snap.data()};
+    applyTheme(currentUserProfile.theme || getSavedTheme(), false);
     document.getElementById("currentUsername").textContent=currentUserProfile.displayName||currentUserProfile.username||user.email.split("@")[0];
     document.getElementById("currentEmail").textContent=user.email||"";
+    document.getElementById("userAvatarButton").textContent=currentUserProfile.avatarEmoji||"👤";
+    document.getElementById("chatComposerAvatar")?.replaceChildren(document.createTextNode(currentUserProfile.avatarEmoji||"👤"));
     authScreen.classList.add("hidden");
     appShell.classList.remove("hidden");
     initApp();
@@ -205,7 +226,16 @@ function initApp(){
   updateCount();
   subscribePlants();
   subscribeDrafts();
+  subscribeNotifications();
+  subscribeTasks();
+  subscribeAdminChat();
+  subscribeAdminDirectory();
+  subscribeActivityLogs();
+  if(isAdminUser()) subscribeSupportRequests();
+  startPresence();
   renderDraftBoard();
+  renderDashboard();
+  showPage("home");
 }
 
 function subscribePlants(){
@@ -216,6 +246,7 @@ function subscribePlants(){
       updateCount();
       buildLibraryCategories();
       buildExportTree();
+      renderDashboard();
       if(document.getElementById("page-library")?.classList.contains("active-page"))renderPlantList();
     },
     err=>{
@@ -227,7 +258,7 @@ function subscribePlants(){
 
 function subscribeDrafts(){
   if(draftsUnsubscribe)draftsUnsubscribe();
-  if(!currentUserProfile?.uid)return;
+  if(!currentUserProfile?.uid || !isAdminUser())return;
   draftsUnsubscribe=db.collection("drafts")
     .where("userId","==",currentUserProfile.uid)
     .onSnapshot(snapshot=>{
@@ -245,6 +276,41 @@ function draftDateValue(v){
   return Number.isNaN(t)?0:t;
 }
 
+function getSavedTheme(){
+  const saved=localStorage.getItem("mongkolMaiTheme") || "default";
+  // Lavender was removed; safely migrate old saved preferences to Default.
+  return saved==="lavender" ? "default" : saved;
+}
+function themeLabel(theme){
+  return ({default:"Default",natursun:"NaturSun",midnight:"Midnight"}[theme]||"Default");
+}
+function applyTheme(theme, persist=true){
+  const allowed=["default","natursun","midnight"];
+  if(!allowed.includes(theme)) theme="default";
+  document.body.dataset.theme=theme;
+  if(persist) localStorage.setItem("mongkolMaiTheme",theme);
+  const moon=document.getElementById("themeMoonToggle");
+  if(moon){
+    const icon=moon.querySelector(".theme-icon");
+    if(icon) icon.textContent=theme==="midnight"?"☀️":"🌙";
+    else moon.textContent=theme==="midnight"?"☀️":"🌙";
+    moon.title=theme==="midnight"?"กลับไปธีมก่อนหน้า":"สลับเป็นธีม Midnight";
+  }
+  document.querySelectorAll(".theme-choice").forEach(btn=>btn.classList.toggle("selected",btn.dataset.theme===theme));
+}
+async function saveThemePreference(theme){
+  applyTheme(theme,true);
+  if(auth.currentUser){
+    try{await db.collection("users").doc(auth.currentUser.uid).update({theme}); currentUserProfile={...(currentUserProfile||{}),theme};}
+    catch(err){console.warn("theme preference save failed",err);}
+  }
+}
+function toggleNightTheme(){
+  const current=document.body.dataset.theme||getSavedTheme();
+  if(current!=="midnight") window.preMidnightTheme=current;
+  saveThemePreference(current==="midnight"?(window.preMidnightTheme||"default"):"midnight");
+}
+
 async function logout(){
   try{await auth.signOut();}catch(err){toast("ออกจากระบบไม่สำเร็จ");}
 }
@@ -254,35 +320,47 @@ function updateCount(){const active=plants.filter(p=>!p.isDeleted).length; const
 function isAdminUser(){
   return currentUserProfile?.role === "admin";
 }
+function isSupportAdmin(){
+  const p=currentUserProfile||{};
+  const authEmail=(auth.currentUser?.email||p.email||"").toLowerCase();
+  const display=(p.displayName||"").trim().toLowerCase();
+  return authEmail==="benyapabaibuaw@gmail.com" && display==="benyapabaibuaw";
+}
 
 function updateRoleBasedUI(){
   const admin = isAdminUser();
   const entryNav=document.querySelector('[data-page="entry"]');
+  const homeNav=document.querySelector('[data-page="home"]');
+  const notificationNav=document.getElementById("notificationNav");
   entryNav?.classList.toggle("hidden", !admin);
+  homeNav?.classList.toggle("hidden", !admin);
+  document.getElementById("adminChatNav")?.classList.toggle("hidden", !admin);
+  notificationNav?.classList.toggle("hidden", !admin);
   document.querySelector('[data-page="export"]')?.classList.remove("hidden");
+  document.querySelector('[data-page="library"]')?.classList.remove("hidden");
+  document.getElementById("dashboardUserName")?.replaceChildren(document.createTextNode(currentUserProfile?.displayName||currentUserProfile?.username||"ผู้ใช้"));
   document.getElementById("libraryAddButton")?.classList.toggle("hidden", !admin);
   document.getElementById("libraryTrashButton")?.classList.toggle("hidden", !admin);
-
-  // Member ไม่สามารถเพิ่มข้อมูลได้ จึงพาไปหน้าคลังข้อมูลทันทีหลัง Login
-  if(!admin){
-    showPage("library");
-  }
+  document.getElementById("adminBackupCard")?.classList.toggle("hidden", !admin);
+  const heroAdd=document.querySelector('#page-home .dashboard-hero .btn.primary');
+  heroAdd?.classList.toggle('hidden', !admin);
+  if(!admin) showPage("library");
 }
 
 function showPage(page){
-  if(page === "entry" && !isAdminUser()){
-    toast("เฉพาะ Admin เท่านั้นที่สามารถเพิ่มหรือแก้ไขข้อมูลได้");
-    return;
+  if(!isAdminUser() && ["home","entry","chat"].includes(page)){
+    if(page!=="library") toast(page==="chat"?"ห้องแชทนี้สำหรับ Admin เท่านั้น":"หน้านี้สำหรับ Admin เท่านั้น");
+    page="library";
   }
+  const target=document.getElementById(`page-${page}`);
+  if(!target)return;
   document.querySelectorAll(".page").forEach(p=>p.classList.remove("active-page"));
-  document.getElementById(`page-${page}`).classList.add("active-page");
-  document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.page===page));
-  if(page==="library"){
-    buildLibraryCategories();
-    initLibrarySearchUI();
-    renderPlantList();
-  }
+  target.classList.add("active-page");
+  document.querySelectorAll(".nav-btn[data-page]").forEach(b=>b.classList.toggle("active",b.dataset.page===page));
+  if(page==="home")renderDashboard();
+  if(page==="library"){ buildLibraryCategories(); initLibrarySearchUI(); renderPlantList(); }
   if(page==="export") buildExportTree();
+  if(page==="chat"){ renderChatMessages(); renderAdminDirectory(); }
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
@@ -947,6 +1025,7 @@ async function commitPlantToFirestore(){
       setSaveProgress(100,"บันทึกข้อมูลเรียบร้อยแล้ว");
       await new Promise(r=>setTimeout(r,500));
       document.getElementById("modalRoot").innerHTML="";
+      await notifyAllAdmins("มีการแก้ไขข้อมูลพืช",`${currentUserProfile.displayName||"Admin"} แก้ไข ${record.id} • ${record.thaiName||""}`,{plantId:record.id,type:"plant_update",icon:"✏️"});
       toast(`แก้ไข ${editingId} เรียบร้อยแล้ว`);
       showPage("library");
       return;
@@ -1012,6 +1091,7 @@ async function commitPlantToFirestore(){
     setSaveProgress(72,`กำลังบันทึก ${createdId} และสร้าง Version แรก...`);
     await savePlantVersion(record,"create");
     await logActivity("create",record);
+    await notifyAllAdmins("มีการเพิ่มข้อมูลพืชใหม่",`${currentUserProfile.displayName||"Admin"} เพิ่ม ${record.id} • ${record.thaiName||""}`,{plantId:record.id,type:"plant_create",icon:"🌱"});
     setSaveProgress(90,"กำลังอัปเดตคลังข้อมูล...");
     if(draftId)await db.collection("drafts").doc(draftId).delete();
     setSaveProgress(100,`บันทึก ${createdId} เรียบร้อยแล้ว`);
@@ -1071,15 +1151,29 @@ function viewPlant(id){
           <div class="detail-item"><b>แก้ไขล่าสุด</b><span>${esc(formatDate(p.updatedAt))}</span></div>
         </div>
       </section>
+      ${isAdminUser()?`<section class="detail-section comment-section">
+        <div class="comment-head"><div><h3>💬 ความคิดเห็นและจุดที่ต้องแก้ไข</h3><p>ใช้บอกเจ้าของข้อมูลหรือ Admin คนอื่นว่าควรแก้ตรงไหนต่อ</p></div><button class="btn ghost" onclick="openTaskComposer('${escAttr(p.id)}')">📌 ปักหมุดให้แก้ไข</button></div>
+        <div id="plantComments_${escAttr(p.id)}" class="plant-comments"><div class="empty-state">กำลังโหลดความคิดเห็น...</div></div>
+        <form class="comment-form" onsubmit="addPlantComment(event,'${escAttr(p.id)}')"><input id="commentInput_${escAttr(p.id)}" maxlength="1000" placeholder="เขียนความคิดเห็นถึงเจ้าของข้อมูลหรือทีม Admin..." required><button class="btn primary" type="submit">ส่งความคิดเห็น</button></form>
+      </section>`:''}
       <div class="form-actions">
         <button class="btn ghost" onclick="closeModal()">ปิด</button>
         ${isAdminUser()?`<button class="btn ghost" onclick="showActivityHistory('${escAttr(p.id)}')">ประวัติการแก้ไข</button><button class="btn ghost" onclick="showVersionHistory('${escAttr(p.id)}')">Version History</button><button class="btn primary" onclick="closeModal();editPlant('${escAttr(p.id)}')">แก้ไขข้อมูล</button>`:""}
       </div>
     </div>
   </div>`;
+  loadPlantComments(p.id);
 }
 
 function closeModal(e){if(e && e.target!==e.currentTarget)return;document.getElementById("modalRoot").innerHTML="";}
+
+document.addEventListener("keydown", (e)=>{
+  if(e.key!=="Escape")return;
+  const helpRoot=document.getElementById("helpRoot");
+  const modalRoot=document.getElementById("modalRoot");
+  if(modalRoot?.innerHTML.trim()){closeModal();return;}
+  if(helpRoot?.innerHTML.trim()){closeHelp();}
+});
 function editPlant(id){
   if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่สามารถแก้ไขข้อมูลได้");return;}
   const p=plants.find(x=>x.id===id);if(!p)return;
@@ -1236,7 +1330,7 @@ async function showVersionHistory(id){
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-head"><div><span class="eyebrow">VERSION HISTORY</span><h2>ประวัติรุ่นข้อมูล • ${esc(id)}</h2><p class="modal-subtitle">เก็บสำเนาข้อมูลก่อนการแก้ไขแต่ละครั้ง</p></div><button class="icon-btn" onclick="closeModal()">×</button></div>
           <div class="history-list">${rows.length?rows.map((r,i)=>`<div class="history-item"><div><strong>${esc(r.action==="create"?"สร้างข้อมูล":"ก่อนแก้ไข")}</strong><span>${esc(r.changedByName||r.changedByEmail||"ไม่ระบุผู้ใช้")}</span></div><small>${esc(formatDate(r.createdAt))}</small><button class="btn ghost small" onclick="viewVersion('${escAttr(r.docId)}')">ดูรุ่นนี้</button></div>`).join(""):`<div class="empty-state">ยังไม่มี Version History</div>`}</div>
-          <div class="form-actions"><button class="btn ghost" onclick="closeModal()">ปิด</button></div>
+          <div class="form-actions"><button class="btn ghost" onclick="showVersionComparison('${escAttr(id)}')">⇄ เปรียบเทียบกับปัจจุบัน</button><button class="btn ghost" onclick="closeModal()">ปิด</button></div>
         </div>
       </div>`;
   }catch(err){console.error(err);toast("โหลด Version History ไม่สำเร็จ");}
@@ -1257,7 +1351,7 @@ async function viewVersion(versionDocId){
 }
 
 function activityActionLabel(action){
-  return ({create:"เพิ่มข้อมูล",update:"แก้ไขข้อมูล",delete:"ย้ายเข้าถังขยะ",restore:"กู้คืนข้อมูล",permanent_delete:"ลบถาวร",delete_request:"ส่งคำขอลบ"}[action]||action||"การทำงาน");
+  return ({create:"เพิ่มข้อมูล",update:"แก้ไขข้อมูล",delete:"ย้ายเข้าถังขยะ",restore:"กู้คืนข้อมูล",permanent_delete:"ลบถาวร",delete_request:"ส่งคำขอลบ",comment:"แสดงความคิดเห็น",task_create:"ปักหมุดงานแก้ไข",task_edit:"แก้ไขงานปักหมุด",task_delete:"ลบงานปักหมุด",task_complete:"ปิดงานแก้ไข",comment_edit:"แก้ไขความคิดเห็น",comment_delete:"ลบความคิดเห็น"}[action]||action||"การทำงาน");
 }
 function dateValue(v){
   if(v&&typeof v.toDate==="function")return v.toDate().getTime();
@@ -1315,8 +1409,8 @@ async function permanentDeletePlant(id){
 async function exportFullBackupJson(){
   if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้นที่สำรองฐานข้อมูลทั้งหมดได้");return;}
   try{
-    const [plantsSnap,versionsSnap,logsSnap,countersSnap,requestsSnap]=await Promise.all([
-      db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get()
+    const [plantsSnap,versionsSnap,logsSnap,countersSnap,requestsSnap,commentsSnap,tasksSnap,chatSnap,notificationsSnap]=await Promise.all([
+      db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get(),db.collection("plantComments").get(),db.collection("adminTasks").get(),db.collection("adminChatMessages").get(),db.collection("notifications").get()
     ]);
     const payload={
       exportedAt:new Date().toISOString(),
@@ -1325,7 +1419,11 @@ async function exportFullBackupJson(){
       plantVersions:versionsSnap.docs.map(d=>({docId:d.id,...d.data()})),
       activityLogs:logsSnap.docs.map(d=>({docId:d.id,...d.data()})),
       counters:countersSnap.docs.map(d=>({docId:d.id,...d.data()})),
-      deletionRequests:requestsSnap.docs.map(d=>({docId:d.id,...d.data()}))
+      deletionRequests:requestsSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      plantComments:commentsSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      adminTasks:tasksSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      adminChatMessages:chatSnap.docs.map(d=>({docId:d.id,...d.data()})),
+      notifications:notificationsSnap.docs.map(d=>({docId:d.id,...d.data()}))
     };
     downloadBlob(`mongkol-mai-backup-${new Date().toISOString().slice(0,10)}.json`,JSON.stringify(payload,null,2),"application/json;charset=utf-8");
     toast("สร้างไฟล์ Backup JSON เรียบร้อยแล้ว");
@@ -1336,7 +1434,7 @@ async function exportFullBackupXlsx(){
   if(!isAdminUser()){toast("เฉพาะ Admin เท่านั้น");return;}
   if(typeof XLSX==="undefined"){toast("โหลด Excel ไม่สำเร็จ");return;}
   try{
-    const [ps,vs,ls,cs,rs]=await Promise.all([db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get()]);
+    const [ps,vs,ls,cs,rs,comments, tasks, chat, notifications]=await Promise.all([db.collection("plants").get(),db.collection("plantVersions").get(),db.collection("activityLogs").get(),db.collection("counters").get(),db.collection("deletionRequests").get(),db.collection("plantComments").get(),db.collection("adminTasks").get(),db.collection("adminChatMessages").get(),db.collection("notifications").get()]);
     const wb=XLSX.utils.book_new(), labels=fieldLabelMap();
     const plantRows=ps.docs.map(d=>{const p={docId:d.id,...d.data()},o={ID:p.id,"หมวดหมู่":CATEGORIES.find(c=>c.code===p.categoryCode)?.name||""};Object.keys(labels).forEach(k=>o[labels[k]]=formatDetailValue(p[k]??""));o["สถานะ"]=p.isDeleted?"ถังขยะ":"ใช้งาน";o["วันที่ลงข้อมูล"]=formatDate(p.createdAt);o["ผู้ลงข้อมูล"]=p.createdByName||p.createdByEmail||"";o["แก้ไขล่าสุด"]=formatDate(p.updatedAt);o["ผู้แก้ไขล่าสุด"]=p.updatedByName||p.updatedByEmail||"";return o;});
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(plantRows),"Plants");
@@ -1344,6 +1442,10 @@ async function exportFullBackupXlsx(){
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(ls.docs.map(d=>{const x=d.data();return {plantId:x.plantId,plantName:x.plantName,action:x.action,user:x.userName||x.userEmail||"",createdAt:formatDate(x.createdAt)};})),"ActivityLogs");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(cs.docs.map(d=>{const x=d.data();return {categoryCode:d.id,count:x.count||0,last:x.last||0,updatedAt:formatDate(x.updatedAt)};})),"Counters");
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rs.docs.map(d=>{const x=d.data();return {plantId:x.plantId,status:x.status,owner:x.plantOwnerName||x.plantOwnerEmail||"",requestedBy:x.requestedByName||x.requestedByEmail||"",createdAt:formatDate(x.createdAt)};})),"DeletionRequests");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(comments.docs.map(d=>{const x=d.data();return {plantId:x.plantId,plantName:x.plantName,author:x.authorName||x.authorEmail||"",message:x.message,createdAt:formatDate(x.createdAt)};})),"PlantComments");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(tasks.docs.map(d=>{const x=d.data();return {plantId:x.plantId,plantName:x.plantName,field:x.fieldLabel,note:x.note,assignee:x.assigneeName,status:x.status,createdBy:x.createdByName,createdAt:formatDate(x.createdAt),completedAt:formatDate(x.completedAt)};})),"AdminTasks");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(chat.docs.map(d=>{const x=d.data();return {sender:x.senderName||x.senderEmail||"",message:x.message,createdAt:formatDate(x.createdAt)};})),"AdminChat");
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(notifications.docs.map(d=>{const x=d.data();return {userId:x.userId,title:x.title,message:x.message,plantId:x.plantId||"",taskId:x.taskId||"",read:!!x.read,createdAt:formatDate(x.createdAt)};})),"Notifications");
     XLSX.writeFile(wb,`mongkol-mai-full-backup-${new Date().toISOString().slice(0,10)}.xlsx`);
     toast("สร้างไฟล์ Backup Excel เรียบร้อยแล้ว");
   }catch(err){console.error(err);toast("สร้าง Backup Excel ไม่สำเร็จ");}
@@ -1362,62 +1464,618 @@ async function logActivity(action,p){
   }catch(err){console.warn("activity log failed",err);}
 }
 
+
+function openProfileMenu(){
+  const current=document.body.dataset.theme||"default";
+  document.getElementById("modalRoot").innerHTML=`
+    <div class="modal-backdrop" onclick="closeModal(event)">
+      <div class="modal profile-menu-modal" onclick="event.stopPropagation()">
+        <div class="modal-head">
+          <div><span class="eyebrow">ACCOUNT & THEME</span><h2>ตั้งค่าและหน้าตาเว็บไซต์</h2><p class="modal-subtitle">จัดการบัญชีของคุณและเลือกธีมที่ชอบ</p></div>
+          <button class="icon-btn" onclick="closeModal()">×</button>
+        </div>
+        <div class="profile-menu-actions">
+          <button class="profile-menu-item" onclick="openProfileModal()"><span>👤</span><div><strong>แก้ไขบัญชี</strong><small>Display Name, Username และ Emoji</small></div></button>
+          <button class="profile-menu-item" onclick="openPasswordModal()"><span>🔐</span><div><strong>เปลี่ยนรหัสผ่าน</strong><small>เปลี่ยนรหัสผ่านบัญชีของตัวเอง</small></div></button>
+          <button class="profile-menu-item" onclick="closeModal();openHelp();setTimeout(()=>openSupportForm('ขอแก้ไขอีเมลบัญชี','ขอแก้ไขอีเมลบัญชี'),250)"><span>📨</span><div><strong>ขอแก้ไขอีเมล</strong><small>ส่งคำขอถึง BENYAPA ผ่านศูนย์ช่วยเหลือ</small></div></button>
+          ${isSupportAdmin()?`<button class="profile-menu-item role-management-item" onclick="openRoleManagement()"><span>🛡️</span><div><strong>ตั้งค่าสิทธิ์การเข้าถึง</strong><small>จัดการ Role ของผู้ใช้งานทั้งหมด • เฉพาะ BENYAPA</small></div></button>`:""}
+        </div>
+        <div class="theme-section">
+          <div class="theme-section-head"><div><span class="eyebrow">THEME</span><h3>เลือกธีม UI</h3></div><span id="activeThemeLabel" class="theme-current-label">${themeLabel(current)}</span></div>
+          <div class="theme-grid">
+            ${[["default","🌿","Default","เขียวสะอาดแบบปัจจุบัน"],["natursun","🌻","NaturSun","โทนธรรมชาติหม่นและอบอุ่น"],["midnight","🌙","Midnight","ดำ–น้ำเงินแบบกลางคืน"]].map(([id,icon,name,desc])=>`<button type="button" class="theme-choice ${current===id?'selected':''}" data-theme="${id}" onclick="chooseThemeFromMenu('${id}')"><span class="theme-swatch theme-swatch-${id}">${icon}</span><span><strong>${name}</strong><small>${desc}</small></span><b>✓</b></button>`).join("")}
+          </div>
+        </div>
+        <button class="profile-menu-item danger-item profile-logout-row" onclick="closeModal();logout()"><span>🚪</span><div><strong>ออกจากระบบ</strong><small>ออกจากบัญชีปัจจุบัน</small></div></button>
+      </div>
+    </div>`;
+}
+async function openRoleManagement(){
+  if(!isSupportAdmin()){toast("เมนูนี้สำหรับ BENYAPA เท่านั้น");return;}
+  closeModal();
+  try{
+    const snap=await db.collection("users").orderBy("displayName").get();
+    const users=snap.docs.map(d=>({uid:d.id,...d.data()}));
+    document.getElementById("modalRoot").innerHTML=`
+      <div class="modal-backdrop" onclick="closeModal(event)">
+        <div class="modal role-management-modal" onclick="event.stopPropagation()">
+          <div class="modal-head"><div><span class="eyebrow">ACCESS CONTROL</span><h2>🛡️ ตั้งค่าสิทธิ์การเข้าถึง</h2><p class="modal-subtitle">เลือก Role ของผู้ใช้งานแต่ละบัญชี แล้วกดบันทึกเพื่ออัปเดต Firestore</p></div><button class="icon-btn" onclick="closeModal()">×</button></div>
+          <div class="role-manager-note"><strong>ผู้ดูแลสิทธิ์หลัก:</strong> benyapabaibuaw • benyapabaibuaw@gmail.com</div>
+          <div class="role-user-list">${users.map(u=>`<div class="role-user-row" data-uid="${escAttr(u.uid)}"><div class="role-user-identity"><span class="role-user-avatar">${esc(u.avatarEmoji||"👤")}</span><div><strong>${esc(u.displayName||u.username||u.email||"ผู้ใช้")}</strong><small>${esc(u.email||"")} ${u.username?`• @${esc(u.username)}`:""}</small></div></div><label class="role-select-label">Role<select class="role-select" data-uid="${escAttr(u.uid)}" data-original-role="${escAttr(u.role||"member")}" ${u.uid===currentUserProfile.uid?"disabled":""}><option value="member" ${u.role==="member"?"selected":""}>member</option><option value="admin" ${u.role==="admin"?"selected":""}>admin</option></select></label></div>`).join("")}</div>
+          <div class="role-manager-actions"><button class="btn ghost" onclick="closeModal()">ยกเลิก</button><button class="btn primary" onclick="saveRoleChanges()">💾 บันทึกการเปลี่ยน Role</button></div>
+        </div>
+      </div>`;
+  }catch(e){console.error(e);toast("โหลดรายการผู้ใช้งานไม่สำเร็จ");}
+}
+async function saveRoleChanges(){
+  if(!isSupportAdmin())return;
+  const changes=[...document.querySelectorAll(".role-select:not(:disabled)")].map(sel=>({uid:sel.dataset.uid,newRole:sel.value,oldRole:sel.dataset.originalRole||"member"})).filter(c=>c.newRole!==c.oldRole);
+  if(!changes.length){toast("ยังไม่มีการเปลี่ยน Role");return;}
+  if(!confirm(`ยืนยันการเปลี่ยน Role จำนวน ${changes.length} บัญชีหรือไม่?`))return;
+  try{
+    const batch=db.batch();
+    changes.forEach(c=>batch.update(db.collection("users").doc(c.uid),{role:c.newRole,updatedAt:firebase.firestore.FieldValue.serverTimestamp()}));
+    await batch.commit();
+    for(const c of changes)await db.collection("notifications").add({userId:c.uid,title:"สิทธิ์การเข้าถึงถูกเปลี่ยน",message:`Role ของบัญชีคุณถูกเปลี่ยนจาก ${c.oldRole} เป็น ${c.newRole} โดย BENYAPA`,type:"role_change",icon:"🛡️",read:false,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    closeModal();toast(`บันทึก Role แล้ว ${changes.length} บัญชี และส่งการแจ้งเตือนให้ผู้ใช้ที่เกี่ยวข้อง`);
+  }catch(e){console.error(e);toast("บันทึก Role ไม่สำเร็จ: "+(e.code==="permission-denied"?"Firestore Rules ไม่อนุญาต":"กรุณาลองใหม่"));}
+}
+function chooseThemeFromMenu(theme){
+  saveThemePreference(theme);
+  document.getElementById("activeThemeLabel")?.replaceChildren(document.createTextNode(themeLabel(theme)));
+  document.querySelectorAll(".theme-choice").forEach(btn=>btn.classList.toggle("selected",btn.dataset.theme===theme));
+}
+
+function openProfileModal(){
+  closeModal();
+  const p=currentUserProfile||{};
+  const emojis=["🌿","🌱","🌳","🍃","🌸","🌺","🌻","🪴","🌴","🍀","🌼","🪷","✨","🌙","🦋","🐝"];
+  document.getElementById("modalRoot").innerHTML=`
+    <div class="modal-backdrop" onclick="closeModal(event)">
+      <div class="modal profile-modal" onclick="event.stopPropagation()">
+        <div class="modal-head">
+          <div><span class="eyebrow">MY ACCOUNT</span><h2>⚙️ ตั้งค่าบัญชี</h2><p class="modal-subtitle">แก้ไขข้อมูลบัญชีได้ ยกเว้นอีเมล</p></div>
+          <button class="icon-btn" onclick="closeModal()">×</button>
+        </div>
+        <form onsubmit="saveProfile(event)">
+          <div class="profile-avatar-picker">
+            <div id="profileAvatarPreview" class="profile-avatar-preview">${esc(p.avatarEmoji||"👤")}</div>
+            <div><strong>เลือก Emoji ประจำตัว</strong><div class="emoji-picker">${emojis.map(e=>`<button type="button" class="emoji-choice ${e===(p.avatarEmoji||"👤")?"selected":""}" onclick="selectProfileEmoji('${e}')">${e}</button>`).join("")}</div></div>
+          </div>
+          <div class="profile-form-grid">
+            <label>Display Name<input id="profileDisplayName" maxlength="80" value="${escAttr(p.displayName||"")}"></label>
+            <label>Username<input id="profileUsername" maxlength="40" value="${escAttr(p.username||"")}"></label>
+            <label class="full-field">อีเมลบัญชี<input value="${escAttr(auth.currentUser?.email||"")}" disabled><small>ไม่สามารถแก้ไขจากหน้านี้ หากต้องการเปลี่ยนอีเมลให้ส่งแบบฟอร์มถึง BENYAPA ในศูนย์ช่วยเหลือ</small></label>
+          </div>
+          <div class="profile-form-actions"><button type="button" class="btn ghost" onclick="closeModal()">ยกเลิก</button><button class="btn primary" type="submit">บันทึกการตั้งค่า</button></div>
+        </form>
+      </div>
+    </div>`;
+  window.selectedProfileEmoji=p.avatarEmoji||"👤";
+}
+function selectProfileEmoji(e){
+  window.selectedProfileEmoji=e;
+  const p=document.getElementById("profileAvatarPreview"); if(p)p.textContent=e;
+  document.querySelectorAll(".emoji-choice").forEach(b=>b.classList.toggle("selected",b.textContent===e));
+}
+async function saveProfile(e){
+  e.preventDefault();
+  if(!auth.currentUser||!currentUserProfile)return;
+  const displayName=document.getElementById("profileDisplayName").value.trim();
+  const username=document.getElementById("profileUsername").value.trim();
+  if(!displayName||!username){toast("กรุณากรอก Display Name และ Username");return;}
+  if(username.length<3){toast("Username ต้องมีอย่างน้อย 3 ตัวอักษร");return;}
+  try{
+    await db.collection("users").doc(auth.currentUser.uid).update({
+      displayName,username,avatarEmoji:window.selectedProfileEmoji||"👤",
+      updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    currentUserProfile={...currentUserProfile,displayName,username,avatarEmoji:window.selectedProfileEmoji||"👤"};
+    document.getElementById("currentUsername").textContent=displayName;
+    document.getElementById("userAvatarButton").textContent=window.selectedProfileEmoji||"👤";
+    document.getElementById("dashboardUserName").textContent=displayName;
+    closeModal();toast("บันทึกการตั้งค่าเรียบร้อยแล้ว");
+  }catch(err){console.error(err);toast("บันทึกการตั้งค่าไม่สำเร็จ");}
+}
+function openPasswordModal(){
+  closeModal();
+  document.getElementById("modalRoot").innerHTML=`
+    <div class="modal-backdrop" onclick="closeModal(event)">
+      <div class="modal password-modal" onclick="event.stopPropagation()">
+        <div class="modal-head"><div><span class="eyebrow">SECURITY</span><h2>🔐 เปลี่ยนรหัสผ่าน</h2><p class="modal-subtitle">ระบบจะยืนยันรหัสผ่านเดิมก่อนเปลี่ยน</p></div><button class="icon-btn" onclick="closeModal()">×</button></div>
+        <form onsubmit="changeOwnPassword(event)" class="password-form">
+          <label>รหัสผ่านปัจจุบัน<input id="profileCurrentPassword" type="password" autocomplete="current-password" required></label>
+          <label>รหัสผ่านใหม่<input id="profileNewPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+          <label>ยืนยันรหัสผ่านใหม่<input id="profileConfirmPassword" type="password" minlength="8" autocomplete="new-password" required></label>
+          <div class="profile-form-actions"><button type="button" class="btn ghost" onclick="closeModal()">ยกเลิก</button><button class="btn primary" type="submit">เปลี่ยนรหัสผ่าน</button></div>
+        </form>
+      </div>
+    </div>`;
+}
+async function changeOwnPassword(e){
+  e.preventDefault();
+  const user=auth.currentUser;
+  if(!user?.email)return;
+  const current=document.getElementById("profileCurrentPassword").value;
+  const next=document.getElementById("profileNewPassword").value;
+  const confirm=document.getElementById("profileConfirmPassword").value;
+  if(next.length<8){toast("รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร");return;}
+  if(next!==confirm){toast("รหัสผ่านใหม่ไม่ตรงกัน");return;}
+  try{
+    const credential=firebase.auth.EmailAuthProvider.credential(user.email,current);
+    await user.reauthenticateWithCredential(credential);
+    await user.updatePassword(next);
+    closeModal();toast("เปลี่ยนรหัสผ่านเรียบร้อยแล้ว");
+  }catch(err){
+    console.error(err);
+    toast(err?.code==="auth/wrong-password"?"รหัสผ่านปัจจุบันไม่ถูกต้อง":"เปลี่ยนรหัสผ่านไม่สำเร็จ กรุณาตรวจสอบรหัสผ่านเดิมและลองใหม่");
+  }
+}
+
+async function submitSupportRequest(e){
+  e.preventDefault();
+  if(!auth.currentUser)return;
+  const subject=document.getElementById("supportSubject").value.trim();
+  const type=document.getElementById("supportType").value;
+  const message=document.getElementById("supportMessage").value.trim();
+  if(!subject||!message){toast("กรุณากรอกหัวข้อและรายละเอียด");return;}
+  try{
+    await db.collection("supportRequests").add({
+      fromUid:auth.currentUser.uid,
+      fromEmail:auth.currentUser.email||"",
+      fromName:currentUserProfile?.displayName||currentUserProfile?.username||"",
+      type,subject,message,targetEmail:"benyapabaibuaw@gmail.com",targetUsername:"BENYAPA",
+      status:"new",createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    e.target.reset();
+    closeModal();
+    toast("ส่งแบบฟอร์มถึง BENYAPA แล้ว");
+  }catch(err){console.error(err);toast("ส่งแบบฟอร์มไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules");}
+}
+function openSupportForm(defaultType="ความคิดเห็นต่อเว็บไซต์",defaultSubject=""){
+  document.getElementById("modalRoot").innerHTML=`
+    <div class="modal-backdrop support-form-backdrop" onclick="closeModal(event)">
+      <div class="modal support-form-modal" onclick="event.stopPropagation()">
+        <div class="modal-head"><div><span class="eyebrow">CONTACT ADMIN</span><h2>📨 แจ้งปัญหา / ส่งความคิดเห็น</h2><p class="modal-subtitle">แบบฟอร์มจะถูกส่งเข้า Inbox ของ BENYAPA • benyapabaibuaw@gmail.com</p></div><button class="icon-btn" onclick="closeModal()">×</button></div>
+        <form class="support-form" onsubmit="submitSupportRequest(event)">
+          <div class="support-form-grid">
+            <label>ประเภท<select id="supportType" required><option value="แจ้งแก้ไขข้อมูล">แจ้งแก้ไขข้อมูล</option><option value="แจ้งปัญหาการใช้งาน">แจ้งปัญหาการใช้งาน</option><option value="ความคิดเห็นต่อเว็บไซต์">ความคิดเห็นต่อเว็บไซต์</option><option value="ขอแก้ไขอีเมลบัญชี">ขอแก้ไขอีเมลบัญชี</option><option value="ข้อเสนอแนะ">ข้อเสนอแนะ</option><option value="คำร้องขอเพิ่มแอดมิน">คำร้องขอเพิ่มแอดมิน</option></select></label>
+            <label>หัวข้อ<input id="supportSubject" maxlength="120" required placeholder="เช่น ขอแก้ไขอีเมลบัญชี" value="${escAttr(defaultSubject)}"></label>
+          </div>
+          <label>รายละเอียด<textarea id="supportMessage" maxlength="3000" rows="7" required placeholder="อธิบายสิ่งที่ต้องการให้แก้ไขหรือความคิดเห็นของคุณ"></textarea></label>
+          <div class="support-form-actions"><small>ผู้ส่ง: ${esc(currentUserProfile?.displayName||currentUserProfile?.username||"ผู้ใช้")} • ${esc(auth.currentUser?.email||"")}</small><div><button type="button" class="btn ghost" onclick="closeModal()">ยกเลิก</button><button class="btn primary" type="submit">ส่งแบบฟอร์มถึง BENYAPA</button></div></div>
+        </form>
+      </div>
+    </div>`;
+  const select=document.getElementById("supportType"); if(select)select.value=defaultType;
+}
+async function openSupportInbox(){
+  if(!isSupportAdmin())return;
+  closeHelp();
+  try{
+    const snap=await db.collection("supportRequests").orderBy("createdAt","desc").limit(50).get();
+    const rows=snap.docs.map(d=>({docId:d.id,...d.data()}));
+    document.getElementById("modalRoot").innerHTML=`
+      <div class="modal-backdrop" onclick="closeModal(event)">
+        <div class="modal support-inbox-modal" onclick="event.stopPropagation()">
+          <div class="modal-head"><div><span class="eyebrow">ADMIN INBOX</span><h2>📨 แบบฟอร์มจากผู้ใช้งาน</h2><p class="modal-subtitle">ปลายทาง: BENYAPA • benyapabaibuaw@gmail.com</p></div><button class="icon-btn" onclick="closeModal()">×</button></div>
+          <div class="support-inbox-list">${rows.length?rows.map(r=>`<article class="support-item ${r.status==="new"?"is-new":""}"><div class="support-item-head"><strong>${esc(r.subject)}</strong><span>${esc(formatDate(r.createdAt))}</span></div><small>${esc(r.fromName||"ผู้ใช้")} • ${esc(r.fromEmail||"")}</small><span class="support-type">${esc(r.type||"ความคิดเห็น")}</span><p>${esc(r.message)}</p><div class="support-item-actions"><button class="btn ghost small" onclick="markSupportRead('${escAttr(r.docId)}')">${r.status==="new"?"ทำเครื่องหมายว่าอ่านแล้ว":"อ่านแล้ว"}</button>${r.fromEmail?`<a class="btn ghost small" href="mailto:${escAttr(r.fromEmail)}?subject=${encodeURIComponent("Re: "+r.subject)}">ตอบกลับทางอีเมล</a>`:""}</div></article>`).join(""):'<div class="empty-state">ยังไม่มีแบบฟอร์ม</div>'}</div>
+        </div>
+      </div>`;
+  }catch(err){console.error(err);toast("เปิดกล่องรับแบบฟอร์มไม่สำเร็จ");}
+}
+async function markSupportRead(id){
+  if(!isSupportAdmin())return;
+  try{await db.collection("supportRequests").doc(id).update({status:"read",readAt:firebase.firestore.FieldValue.serverTimestamp(),readBy:auth.currentUser.uid});toast("อัปเดตสถานะแล้ว");openSupportInbox();}catch(e){toast("อัปเดตสถานะไม่สำเร็จ");}
+}
+function subscribeSupportRequests(){
+  if(supportRequestsUnsubscribe)supportRequestsUnsubscribe();
+  if(!isSupportAdmin())return;
+  supportRequestsUnsubscribe=db.collection("supportRequests").where("status","==","new").onSnapshot(s=>{
+    window.newSupportRequestCount=s.size;
+    renderDashboard();
+  },e=>console.warn("supportRequests",e));
+}
+
+function closeHelp(e){
+  if(e && e.target!==e.currentTarget)return;
+  const root=document.getElementById("helpRoot");
+  if(root)root.innerHTML="";
+}
+
 function openHelp(){
   const root=document.getElementById("helpRoot");
   if(!root)return;
   const admin=isAdminUser();
+  const cards=[
+    ["01","เริ่มต้นใช้งาน","Login, Logout และสิทธิ์ Admin/Member: Admin จัดการข้อมูลและ Collaboration ได้ ส่วน Member ใช้เฉพาะคลังข้อมูล การส่งออก และช่วยเหลือ","เริ่ม login ออกจากระบบ สิทธิ์ บทบาท"],
+    ["02","Dashboard","หน้าแรกของ Admin แสดงข้อมูลใช้งาน แจ้งเตือนที่ยังไม่อ่าน จำนวนข้อมูลที่คุณลง และข้อมูลในถังขยะ พร้อมทางลัดกรอกข้อมูลต่อ","dashboard หน้าหลัก สถิติ ทางลัด"],
+    ["03","ตั้งค่า บัญชี และหน้าตาเว็บไซต์","กดเมนูตั้งค่าเพื่อเปลี่ยน Emoji, Display Name, Username และ Theme รวมถึงเปลี่ยนรหัสผ่าน อีเมลแก้จากหน้าตั้งค่าไม่ได้ ต้องส่งคำขอถึง BENYAPA","ตั้งค่า username display name emoji รหัสผ่าน email theme ธีม"],
+    ["04","เพิ่มข้อมูลและ ID","เลือกหมวด A–H ระบบแนะนำ ID เช่น A01 และรองรับ ID ที่กำหนดเองโดยต้องขึ้นต้นด้วยตัวอักษรหมวดเดียวกันและไม่ซ้ำ","เพิ่มข้อมูล ID A01 หมวด"],
+    ["05","Draft และกรอกข้อมูลต่อ","ระบบ Auto-save แบบร่างแยกตามบัญชี ตั้งชื่อ Draft ได้ และปุ่มกรอกข้อมูลต่อบน Dashboard จะเปิด Draft ล่าสุดของคุณทันที","draft กรอกต่อ autosave แบบร่าง"],
+    ["06","คลังข้อมูลและ Smart Search","ค้นหา กรอง และเรียงข้อมูลพืชจาก ID ชื่อ ลักษณะ ความเชื่อ การดูแล พื้นที่ และคุณสมบัติต่าง ๆ","คลังข้อมูล ค้นหา filter sort"],
+    ["07","แก้ไขข้อมูลและ Version History","Admin แก้ข้อมูลของทุกคนได้ ระบบเก็บผู้สร้าง ผู้แก้ไข และ Snapshot ก่อนแก้ไข","แก้ไข version ประวัติ"],
+    ["08","Counters และถังขยะ","เพิ่มข้อมูลจะเพิ่ม count, Soft Delete ย้ายเข้าถังขยะ, Restore นำกลับมา และ Permanent Delete จะลบถาวร","counter ถังขยะ restore ลบ"],
+    ["09","Export และ Backup","Export เป็น Excel, CSV, JSON ได้ และ Admin สามารถ Backup ข้อมูลหลักพร้อม Version, Activity, Comments, Tasks, Chat และ Notifications","export backup excel csv json"],
+    ["10","Admin Chat","Admin ทุกคนเข้าห้องร่วมกันอัตโนมัติ แสดง Online/Offline และ Last seen ใช้ @Mention และจัดการข้อความของตัวเองได้","chat แชท online offline mention"],
+    ["11","ความคิดเห็นต่อข้อมูลพืช","Admin แสดงความคิดเห็นในรายการพืชได้ ความคิดเห็นของตัวเองแก้ไขหรือลบได้ และกิจกรรมสำคัญส่ง Notification","comment ความคิดเห็น แก้ไข ลบ"],
+    ["12","กระดานปักหมุดงานแก้ไข","ผู้ปักหมุดแก้ไขหรือลบ Pin ของตัวเองได้ ระบุจุดที่ต้องแก้และมอบหมาย Admin คนอื่น","pin ปักหมุด task งาน มอบหมาย"],
+    ["13","สถานะงานและสิทธิ์","เฉพาะ Admin ที่ถูกมอบหมายเท่านั้นที่กดทำสำเร็จได้ คนอื่นเห็นงานและสถานะได้","สถานะ สำเร็จ มอบหมาย"],
+    ["14","Notification","ระฆังแสดงจุดสีแดงและจำนวนที่ยังไม่อ่าน แจ้งเตือน Comment, Pin, Mention, งานสำเร็จ และกิจกรรมสำคัญ","notification แจ้งเตือน ระฆัง unread"],
+    ["15","Version Comparison","เลือก Version เดิมแล้วเปรียบเทียบกับข้อมูลปัจจุบัน ระบบแสดงเฉพาะช่องที่เปลี่ยน พร้อมผู้แก้และเวลา","version comparison เปรียบเทียบ"],
+    ["16","Activity History","บันทึกการเพิ่ม แก้ไข ลบ กู้คืน Comment และงานปักหมุด เพื่อให้ตรวจสอบย้อนหลังได้","activity history ประวัติ"],
+    ["17","Deletion Request","การลบข้อมูลของผู้อื่นใช้คำขอและเก็บหลักฐานไว้ใน Firestore ตามสิทธิ์ที่กำหนด","deletion request คำขอลบ"],
+    ["18","ศูนย์รับแบบฟอร์ม","ผู้ใช้ส่งข้อเสนอแนะ แจ้งปัญหา หรือขอแก้ไขอีเมลถึง BENYAPA ได้ และ Admin บัญชี BENYAPA จะเห็นคำขอใน Inbox","แบบฟอร์ม แจ้งปัญหา ความคิดเห็น อีเมล BENYAPA"],
+    ["19","ความปลอดภัยและ Firestore Rules","สิทธิ์จริงบังคับด้วย Firestore Rules ไม่ใช่การซ่อนปุ่ม หลังแก้ Rules ต้อง Deploy Rules ก่อนใช้งานจริง","security rules permission firebase"],
+    ["20","อินเทอร์เน็ตและการแก้ปัญหา","การอ่าน/เขียน Firestore ต้องใช้อินเทอร์เน็ต หากบันทึกไม่ได้ให้ตรวจ Console, Authentication และ Firestore Rules","แก้ปัญหา permission error console"],
+  ];
+  const helpGroups=[
+    ["01","เริ่มต้นใช้งาน","ทำความรู้จักระบบ บัญชี และหน้า Dashboard",[cards[0],cards[1],cards[2]]],
+    ["02","การจัดการข้อมูล","กรอก ค้นหา แก้ไข บันทึก และส่งออกข้อมูล",[cards[3],cards[4],cards[5],cards[6],cards[7],cards[8]]],
+    ["03","การทำงานร่วมกันของ Admin","Chat, Comment, Pin, Notification และประวัติการทำงาน",[cards[9],cards[10],cards[11],cards[12],cards[13],cards[14],cards[15]]],
+    ["04","ความปลอดภัย การช่วยเหลือ และการแก้ปัญหา","คำขอลบ แบบฟอร์ม และแนวทางตรวจสอบปัญหา",[cards[16],cards[17],cards[18],cards[19]]]
+  ];
+  const cardsHtml=helpGroups.map((g,gi)=>`<section class="help-category-section ${gi===0?'is-open':''}" data-help-category>
+    <button type="button" class="help-category-heading" onclick="toggleHelpCategory(this.parentElement)">
+      <span>${g[0]}</span><div><strong>${esc(g[1])}</strong><small>${esc(g[2])}</small></div><b class="help-category-chevron">⌄</b>
+    </button>
+    <div class="help-category-body">${g[3].map(c=>`<article class="help-card" data-help-search="${escAttr((c[1]+" "+c[2]+" "+c[3]).toLowerCase())}"><div class="help-icon">${c[0]}</div><div><h3>${esc(c[1])}</h3><p>${esc(c[2])}</p></div></article>`).join("")}</div>
+  </section>`).join("");
   root.innerHTML=`
     <div class="help-backdrop" onclick="closeHelp(event)">
       <section class="help-modal" onclick="event.stopPropagation()" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
         <div class="help-head">
-          <div>
-            <span class="eyebrow">HELP CENTER</span>
-            <h2 id="helpTitle">คู่มือการใช้งาน มงคลไม้</h2>
-            <p>คำอธิบายฟังก์ชันสำคัญสำหรับ Admin และ Member พร้อมแนวทางใช้งานอย่างปลอดภัย</p>
-          </div>
+          <div><span class="eyebrow">HELP CENTER</span><h2 id="helpTitle">คู่มือการใช้งาน มงคลไม้</h2><p>เรียงหมวด 01 → 04 จากบนลงล่าง กดหัวข้อเพื่อเปิดหรือพับรายละเอียด และใช้ค้นหาเพื่อหาเรื่องที่ต้องการได้ทันที</p></div>
           <button class="icon-btn" type="button" onclick="closeHelp()" aria-label="ปิด">×</button>
         </div>
-
-        <div class="help-role-banner">
-          <span>${admin?"👑":"👤"}</span>
-          <div><strong>คุณกำลังใช้งานในสิทธิ์ ${admin?"Admin":"Member"}</strong><small>${admin?"สามารถจัดการข้อมูลหลักและเพิ่ม/แก้ไข/ลบข้อมูลได้":"สามารถดู ค้นหา และส่งออกข้อมูลได้ แต่ไม่สามารถแก้ไขฐานข้อมูล"}</small></div>
-        </div>
-
-        <div class="help-grid">
-          <article class="help-card"><div class="help-icon">🌱</div><div><h3>เลือกหมวดหมู่และรหัส</h3><p>เลือกหมวดการเจริญเติบโต A–H ระบบจะแนะนำรหัสถัดไป เช่น A01, A02 และรองรับการกำหนดรหัสเอง โดยรหัสต้องขึ้นต้นด้วยตัวอักษรหมวดเดียวกันและห้ามซ้ำ</p></div></article>
-          <article class="help-card"><div class="help-icon">💾</div><div><h3>สำรองข้อมูลอัตโนมัติ</h3><p>ระหว่างกรอกข้อมูล ระบบจะสำรองแบบร่างของบัญชีคุณอัตโนมัติหลังหยุดพิมพ์ และมีปุ่มสำรองด้วยตนเองเพื่อเก็บงานทันที</p></div></article>
-          <article class="help-card"><div class="help-icon">📌</div><div><h3>กรอกข้อมูลต่อ</h3><p>หน้าแรกจะแสดงแบบร่างของบัญชีปัจจุบัน คุณสามารถกลับมากรอกต่อหลังรีเฟรชหรือเข้าสู่ระบบใหม่ได้ โดยแบบร่างของแต่ละบัญชีแยกจากกัน</p></div></article>
-          <article class="help-card"><div class="help-icon">🗂️</div><div><h3>บันทึกข้อมูลใหม่ / ต่อข้อมูลเดิม</h3><p>เมื่อเลือกหมวดหมู่ ระบบให้เลือกเริ่มรายการใหม่หรือเลือกแบบร่างเดิม แบบร่างเก่าจะไม่ถูกลบเมื่อเริ่มรายการใหม่</p></div></article>
-          <article class="help-card"><div class="help-icon">⚠️</div><div><h3>ข้อมูลไม่ครบก็ยืนยันบันทึกได้</h3><p>ก่อนบันทึกระบบจะแสดงรายการช่องที่ยังว่าง คุณเลือกกลับไปกรอกต่อและกระโดดไปช่องแรกที่ขาด หรือยืนยันบันทึกทั้งที่ข้อมูลยังไม่ครบได้</p></div></article>
-          <article class="help-card"><div class="help-icon">☁️</div><div><h3>ยืนยันและแสดงความคืบหน้า</h3><p>การบันทึกจริงมีการยืนยันอีกครั้งและแสดงสถานะการทำงานระหว่างเขียนข้อมูลลง Firestore เพื่อลดความเสี่ยงจากการปิดหน้าโดยไม่ตั้งใจ</p></div></article>
-          <article class="help-card"><div class="help-icon">🔎</div><div><h3>คลังข้อมูลและ Smart Search</h3><p>ค้นหาได้จากรหัส ชื่อไทย ชื่อวิทยาศาสตร์ ชื่ออังกฤษ ชื่อท้องถิ่น วงศ์พืช ลักษณะ ความเชื่อ การดูแล และข้อมูลสำหรับระบบแนะนำ พร้อมตัวกรองประเภท การดูแล แสง น้ำ พื้นที่ มือใหม่ สัตว์เลี้ยง และพื้นที่จำกัด</p></div></article>
-          <article class="help-card"><div class="help-icon">✏️</div><div><h3>Admin แก้ไขข้อมูลของทุกคน</h3><p>Admin สามารถแก้ไขข้อมูลพืชได้ทุกระเบียน ไม่ว่าจะเป็นข้อมูลที่ Admin คนอื่นหรือสมาชิกเป็นผู้นำเข้า ระบบจะเก็บผู้ลงข้อมูลเดิมและผู้แก้ไขล่าสุดแยกกัน</p></div></article>
-          <article class="help-card"><div class="help-icon">🧾</div><div><h3>Version History</h3><p>ก่อนแก้ไข ระบบจะเก็บ Snapshot รุ่นเดิมไว้แบบแก้ไขหรือลบไม่ได้ Admin สามารถเปิดดูประวัติรุ่นและตรวจสอบว่าใครเป็นผู้แก้ไข</p></div></article>
-          <article class="help-card"><div class="help-icon">📝</div><div><h3>Activity History</h3><p>ระบบบันทึกกิจกรรม เช่น เพิ่ม แก้ไข ย้ายเข้าถังขยะ กู้คืน ลบถาวร และส่งคำขอลบ พร้อมผู้ใช้งานและเวลา เพื่อใช้ตรวจสอบย้อนหลัง</p></div></article>
-          <article class="help-card"><div class="help-icon">🗑️</div><div><h3>ถังขยะและ Soft Delete</h3><p>การลบข้อมูลหลักจะย้ายเข้าถังขยะก่อน ข้อมูลยังสามารถกู้คืนได้ การลบถาวรเป็นการลบออกจาก Firestore และไม่สามารถกู้คืนจากถังขยะได้</p></div></article>
-          <article class="help-card"><div class="help-icon">🔢</div><div><h3>Counters ของแต่ละหมวด</h3><p>แต่ละหมวด A–H มีค่า count สำหรับจำนวนข้อมูลที่ใช้งานอยู่ และค่า last สำหรับเลข ID สูงสุด เมื่อเพิ่มข้อมูล count จะ +1 เมื่อลบเข้าถังขยะ count จะ −1 และเมื่อกู้คืนจะ +1 โดยลบถาวรจะไม่ลดซ้ำ</p></div></article>
-          <article class="help-card"><div class="help-icon">🛠️</div><div><h3>ตรวจสอบ / ซ่อม Counters</h3><p>Admin สามารถตรวจสอบจำนวนจริงจาก collection plants แล้วเขียนค่า count และ last กลับไปยัง counters ทั้ง 8 หมวด เหมาะสำหรับแก้ไขฐานข้อมูลเก่าหรือกรณีค่าจำนวนคลาดเคลื่อน</p></div></article>
-          <article class="help-card"><div class="help-icon">📤</div><div><h3>ส่งออกข้อมูล</h3><p>เลือกข้อมูลแล้วส่งออกเป็น Excel (.xlsx), CSV (.csv) หรือ JSON (.json) ได้ ข้อมูลที่ส่งออกมาจาก Firestore และไม่กระทบข้อมูลต้นฉบับ</p></div></article>
-          <article class="help-card"><div class="help-icon">💾</div><div><h3>Admin Backup</h3><p>สำรองฐานข้อมูลเป็น Excel หรือ JSON โดยรวม Plants, Version History, Activity Logs, Counters และคำขอลบ เพื่อใช้เก็บหลักฐานและตรวจสอบระบบภายหลัง</p></div></article>
-          <article class="help-card"><div class="help-icon">👥</div><div><h3>สิทธิ์ Admin / Member</h3><p>Admin เพิ่ม แก้ไข ลบ กู้คืน ดูประวัติ และสำรองฐานข้อมูลได้ ส่วน Member ดู ค้นหา และส่งออกข้อมูลได้ แต่ไม่สามารถแก้ไขฐานข้อมูลหลัก</p></div></article>
-          <article class="help-card"><div class="help-icon">✉️</div><div><h3>คำขอลบข้อมูลของผู้อื่น</h3><p>หากข้อมูลเป็นของผู้ใช้คนอื่น ระบบจะไม่ลบทันที แต่สร้าง Deletion Request และเตรียมอีเมลถึงเจ้าของข้อมูลเพื่อให้ตรวจสอบก่อน</p></div></article>
-          <article class="help-card"><div class="help-icon">🔐</div><div><h3>ความปลอดภัยและ Firestore Rules</h3><p>สิทธิ์สำคัญตรวจสอบที่ Firestore Rules ไม่ใช่เพียงการซ่อนปุ่มบนหน้าเว็บ หลังแก้ Rules ต้อง Deploy Rules ใหม่ก่อนสิทธิ์จะมีผลจริง</p></div></article>
-          <article class="help-card"><div class="help-icon">📱</div><div><h3>การใช้งานบนโทรศัพท์</h3><p>รองรับหน้าจอมือถือและตัวกรองแบบ responsive หากข้อมูลไม่อัปเดตให้รีเฟรชหน้าและตรวจสอบอินเทอร์เน็ต</p></div></article>
-          <article class="help-card"><div class="help-icon">🌐</div><div><h3>การเชื่อมต่ออินเทอร์เน็ต</h3><p>การอ่านและเขียน Cloud Firestore ต้องใช้อินเทอร์เน็ต หากบันทึกหรือสำรองไม่สำเร็จให้ตรวจสอบการเชื่อมต่อก่อนปิดหน้า</p></div></article>
-        </div>
-
-        <div class="help-footer">
-          <span>💡 บัญชีของคุณจะเห็นข้อมูลสำรองของตัวเองเป็นหลัก</span>
-          <button class="btn primary" type="button" onclick="closeHelp()">ปิดคู่มือ</button>
-        </div>
+        <div class="help-role-banner"><span>${admin?"👑":"👤"}</span><div><strong>คุณกำลังใช้งานในสิทธิ์ ${admin?"Admin":"Member"}</strong><small>${admin?"สามารถจัดการข้อมูลหลักและ Collaboration ได้":"สามารถใช้เฉพาะคลังข้อมูล การส่งออกข้อมูล และส่วนช่วยเหลือได้"}</small></div></div>
+        <div class="help-search-box"><span>⌕</span><input id="helpSearchInput" type="search" placeholder="ค้นหา เช่น กรอกข้อมูลต่อ, เปลี่ยนรหัสผ่าน, Notification..." oninput="filterHelpCards(this.value)"><button type="button" onclick="clearHelpSearch()">×</button></div>
+        <div id="helpSearchResult" class="help-search-result">แสดงคู่มือทั้งหมด ${cards.length} หัวข้อ</div>
+        <div id="helpCardsGrid" class="help-sections">${cardsHtml}</div>
+        <section class="help-support-section" id="helpSupportForm">
+          <div><span class="eyebrow">CONTACT ADMIN</span><h3>📨 ต้องการแจ้งปัญหาหรือส่งความคิดเห็น?</h3><p>แบบฟอร์มจะส่งถึง <strong>BENYAPA</strong> • benyapabaibuaw@gmail.com และจะแสดงในกล่องรับแบบฟอร์มของ Admin</p></div>
+          <button class="btn primary" type="button" onclick="openSupportForm()">เปิดแบบฟอร์ม</button>
+        </section>
+        ${isSupportAdmin()?`<section class="support-admin-banner"><div><span class="eyebrow">ADMIN INBOX</span><h3>📨 กล่องรับแบบฟอร์ม</h3><p>กล่องนี้เป็นของ Admin ผู้รับแบบฟอร์มหลักเท่านั้น • BENYAPA • benyapabaibuaw@gmail.com</p></div><button class="btn primary" type="button" onclick="openSupportInbox()">เปิดกล่องรับแบบฟอร์ม${window.newSupportRequestCount?` (${window.newSupportRequestCount} ใหม่)`:""}</button></section>`:""}
+        <div class="help-footer"><span>⌨️ กด Esc เพื่อปิดหน้าต่างช่วยเหลือ</span><button class="btn ghost" type="button" onclick="closeHelp()">ปิดคู่มือ</button></div>
       </section>
     </div>`;
 }
+function toggleHelpCategory(section){
+  section?.classList.toggle("is-open");
+}
+function clearHelpSearch(){
+  const input=document.getElementById("helpSearchInput");
+  if(input)input.value="";
+  filterHelpCards("");
+}
+function filterHelpCards(query){
+  const q=normalizeSearchValue(query);
+  const sections=[...document.querySelectorAll("#helpCardsGrid .help-category-section")];
+  let shown=0;
+  sections.forEach(section=>{
+    const cards=[...section.querySelectorAll(".help-card")];
+    let sectionShown=0;
+    cards.forEach(card=>{const hit=!q||normalizeSearchValue(card.dataset.helpSearch).includes(q);card.classList.toggle("hidden",!hit);if(hit){shown++;sectionShown++;}});
+    section.classList.toggle("hidden",q&&sectionShown===0);
+    if(q&&sectionShown) section.classList.add("is-open");
+    if(!q&&sectionShown) section.classList.toggle("hidden",false);
+  });
+  const result=document.getElementById("helpSearchResult");
+  if(result)result.textContent=q?`พบคู่มือที่เกี่ยวข้อง ${shown} หัวข้อ`:`แสดงคู่มือทั้งหมด 20 หัวข้อ`;
+}
 
-function closeHelp(event){
-  if(event && event.target!==event.currentTarget)return;
-  document.getElementById("helpRoot").innerHTML="";
-  showPage(isAdminUser()?"entry":"library");
+// ===================== TEAM COLLABORATION =====================
+async function getAdminProfiles(){
+  const snap=await db.collection("users").where("role","==","admin").get();
+  return snap.docs.map(d=>({uid:d.id,...d.data()}));
+}
+
+async function createNotificationsForUsers(userIds,title,message,meta={}){
+  const ids=[...new Set((userIds||[]).filter(Boolean))];
+  if(!ids.length || !isAdminUser()) return;
+  const chunks=[];
+  for(let i=0;i<ids.length;i+=450)chunks.push(ids.slice(i,i+450));
+  for(const idsChunk of chunks){
+    const batch=db.batch();
+    idsChunk.forEach(uid=>{
+      const ref=db.collection("notifications").doc();
+      batch.set(ref,{userId:uid,title,message,plantId:meta.plantId||"",taskId:meta.taskId||"",type:meta.type||"team",icon:meta.icon||"🔔",read:false,createdAt:firebase.firestore.FieldValue.serverTimestamp(),createdBy:currentUserProfile?.uid||"",createdByName:currentUserProfile?.displayName||currentUserProfile?.username||"Admin"});
+    });
+    await batch.commit();
+  }
+}
+
+async function notifyAllAdmins(title,message,meta={}){
+  try{
+    const admins=adminDirectory.length?adminDirectory:await getAdminProfiles();
+    await createNotificationsForUsers(admins.map(a=>a.uid),title,message,meta);
+  }catch(e){console.warn("notifyAllAdmins",e);}
+}
+
+async function notifyUsers(userIds,title,message,meta={}){
+  try{await createNotificationsForUsers(userIds,title,message,meta);}catch(e){console.warn("notifyUsers",e);}
+}
+
+function subscribeNotifications(){
+  if(notificationUnsubscribe)notificationUnsubscribe();
+  if(!currentUserProfile?.uid || !isAdminUser())return;
+  notificationUnsubscribe=db.collection("notifications").where("userId","==",currentUserProfile.uid).onSnapshot(s=>{
+    const rows=s.docs.map(d=>({docId:d.id,...d.data()})).sort((a,b)=>dateValue(b.createdAt)-dateValue(a.createdAt));
+    window.userNotifications=rows;
+    const unread=rows.filter(x=>!x.read).length;
+    const badge=document.getElementById("notificationBadge");
+    const nav=document.getElementById("notificationNav");
+    if(badge){badge.textContent=unread>99?"99+":unread;badge.classList.toggle("hidden",!unread);}
+    nav?.classList.toggle("has-unread",unread>0);
+    const box=document.getElementById("dashboardNotifications");
+    if(box)box.innerHTML=rows.slice(0,8).map(renderNotificationItem).join("")||'<div class="empty-state">ยังไม่มีการแจ้งเตือน</div>';
+  },err=>console.warn("notifications",err));
+}
+function renderNotificationItem(n){
+  return `<button class="notification-item ${n.read?'':'unread'}" onclick="openNotification('${escAttr(n.docId)}')"><span class="notification-icon">${esc(n.icon||"🔔")}</span><span><strong>${esc(n.title||"การแจ้งเตือน")}</strong><small>${esc(n.message||"")} • ${esc(formatDate(n.createdAt))}</small></span></button>`;
+}
+async function openNotification(id){
+  if(!isAdminUser())return;
+  try{await db.collection("notifications").doc(id).update({read:true,readAt:firebase.firestore.FieldValue.serverTimestamp()});}catch(e){}
+  const n=(await db.collection("notifications").doc(id).get()).data()||{};
+  if(n.plantId){closeModal();viewPlant(n.plantId);} else if(n.taskId){showPage("home");}
+}
+async function openNotifications(){
+  if(!isAdminUser())return;
+  const snap=await db.collection("notifications").where("userId","==",currentUserProfile.uid).get();
+  const rows=snap.docs.map(d=>({docId:d.id,...d.data()})).sort((a,b)=>dateValue(b.createdAt)-dateValue(a.createdAt));
+  document.getElementById("modalRoot").innerHTML=`<div class="modal-backdrop" onclick="closeModal(event)"><div class="modal notification-modal" onclick="event.stopPropagation()"><div class="modal-head"><div><span class="eyebrow">NOTIFICATIONS</span><h2>🔔 การแจ้งเตือนทั้งหมด</h2><p class="modal-subtitle">ความคิดเห็น งานปักหมุด การ Mention และกิจกรรมสำคัญของทีม</p></div><button class="icon-btn" onclick="closeModal()">×</button></div><div class="notification-toolbar"><button class="btn ghost small" onclick="markAllNotificationsRead()">✓ อ่านทั้งหมด</button><button class="btn ghost small" onclick="clearReadNotifications()">🧹 ล้างที่อ่านแล้ว</button></div><div class="notification-list">${rows.length?rows.map(renderNotificationItem).join(""):'<div class="empty-state">ยังไม่มีการแจ้งเตือน</div>'}</div><div class="form-actions"><button class="btn primary" onclick="closeModal()">ปิด</button></div></div></div>`;
+}
+async function markAllNotificationsRead(){
+  if(!isAdminUser())return;
+  const snap=await db.collection("notifications").where("userId","==",currentUserProfile.uid).get();
+  const batch=db.batch(); snap.docs.filter(d=>!d.data().read).forEach(d=>batch.update(d.ref,{read:true,readAt:firebase.firestore.FieldValue.serverTimestamp()}));
+  if(snap.docs.length)await batch.commit(); toast("ทำเครื่องหมายการแจ้งเตือนทั้งหมดว่าอ่านแล้ว"); openNotifications();
+}
+async function clearReadNotifications(){
+  if(!isAdminUser())return;
+  const snap=await db.collection("notifications").where("userId","==",currentUserProfile.uid).get();
+  const batch=db.batch(); snap.docs.filter(d=>d.data().read).forEach(d=>batch.delete(d.ref));
+  if(snap.docs.length)await batch.commit(); toast("ล้างการแจ้งเตือนที่อ่านแล้ว"); openNotifications();
+}
+
+function subscribeAdminChat(){
+  if(chatUnsubscribe)chatUnsubscribe();
+  if(!isAdminUser())return;
+  chatUnsubscribe=db.collection("adminChatMessages").orderBy("createdAt","asc").limitToLast(200).onSnapshot(s=>{
+    window.adminChatMessages=s.docs.map(d=>({docId:d.id,...d.data()}));
+    renderChatMessages();
+  },err=>console.warn("admin chat",err));
+}
+function renderChatMessages(){
+  const box=document.getElementById("chatMessages"); if(!box)return;
+  const rows=window.adminChatMessages||[];
+  box.innerHTML=rows.length?rows.map(m=>{
+    const mine=m.senderId===currentUserProfile?.uid;
+    const mentions=(m.mentions||[]).map(x=>`@${esc(x.name||x.uid)}`).join(" ");
+    const reply=m.replyToName?`<div class="chat-reply">↩ ${esc(m.replyToName)}: ${esc(m.replyToText||"")}</div>`:"";
+    return `<div class="chat-message ${mine?'mine':''}" data-message-id="${escAttr(m.docId)}" oncontextmenu="openChatContextMenu(event,'${escAttr(m.docId)}')"><div class="chat-avatar" title="${escAttr(m.senderName||m.senderEmail||"Admin")}">${esc((m.senderAvatar||((adminDirectory||[]).find(a=>a.uid===m.senderId)?.avatarEmoji)||"👤"))}</div><div><div class="chat-bubble"><strong>${esc(m.senderName||m.senderEmail||"Admin")}</strong>${reply}<p>${renderMentions(m.message||"")}</p>${m.editedAt?'<small class="edited-label">แก้ไขแล้ว</small>':''}</div><small>${esc(formatDate(m.createdAt))}</small></div></div>`;
+  }).join(""):'<div class="empty-state">ยังไม่มีข้อความ เริ่มคุยกับทีม Admin ได้เลย</div>';
+  box.scrollTop=box.scrollHeight;
+}
+function renderMentions(text){
+  let safe=esc(text);
+  (adminDirectory||[]).forEach(a=>{
+    const names=[a.displayName,a.username,a.email].filter(Boolean).map(esc).sort((x,y)=>y.length-x.length);
+    names.forEach(n=>{if(n)safe=safe.replace(new RegExp(`@${escapeRegExp(n)}(?=\\s|$)`,'g'),`<span class="chat-mention">@${n}</span>`);});
+  });
+  return safe;
+}
+function escapeRegExp(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+
+function subscribeAdminDirectory(){
+  if(adminDirectoryUnsubscribe)adminDirectoryUnsubscribe();
+  if(!isAdminUser())return;
+  adminDirectoryUnsubscribe=db.collection("users").where("role","==","admin").onSnapshot(s=>{
+    adminDirectory=s.docs.map(d=>({uid:d.id,...d.data()}));
+    renderAdminDirectory();
+    renderDashboard();
+  },e=>console.warn("admin directory",e));
+}
+async function loadAdminDirectory(){
+  if(!isAdminUser())return;
+  try{const s=await db.collection("users").where("role","==","admin").get(); adminDirectory=s.docs.map(d=>({uid:d.id,...d.data()})); renderAdminDirectory();}catch(e){console.warn(e);}
+}
+function renderAdminDirectory(){
+  const box=document.getElementById("adminMembersList"), label=document.getElementById("adminCountLabel"); if(!box)return;
+  if(label)label.textContent=`${adminDirectory.length} Admin`;
+  box.innerHTML=adminDirectory.map(a=>{
+    const online=a.online===true && (Date.now()-dateValue(a.lastSeen||0)<90000);
+    return `<div class="admin-member"><span class="member-avatar">${esc(a.avatarEmoji||"👤")}</span><span><strong>${esc(a.displayName||a.username||a.email||"Admin")}</strong><small>${online?'🟢 ออนไลน์':`⚪ ออฟไลน์${a.lastSeen?` • ${esc(formatDate(a.lastSeen))}`:''}`}</small></span><i class="presence-dot ${online?'online':'offline'}">●</i></div>`;
+  }).join("")||'<div class="empty-state">ยังไม่พบ Admin</div>';
+}
+async function startPresence(){
+  if(!currentUserProfile?.uid)return;
+  const update=async()=>{
+    try{await db.collection("users").doc(currentUserProfile.uid).set({online:true,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});}catch(e){console.warn("presence",e);}
+  };
+  await update();
+  if(presenceTimer)clearInterval(presenceTimer);
+  presenceTimer=setInterval(update,30000);
+  document.addEventListener('visibilitychange',update,{passive:true});
+  window.addEventListener('beforeunload',()=>{try{db.collection("users").doc(currentUserProfile.uid).set({online:false,lastSeen:firebase.firestore.FieldValue.serverTimestamp()},{merge:true});}catch(e){}},{once:true});
+}
+function getMentionCandidates(text){
+  const found=[];
+  const raw=String(text||'');
+  (adminDirectory||[]).forEach(a=>{
+    [a.displayName,a.username,a.email].filter(Boolean).forEach(name=>{
+      const token='@'+String(name);
+      if(raw.toLowerCase().includes(token.toLowerCase()) && !found.some(x=>x.uid===a.uid)){
+        found.push({uid:a.uid,name:a.displayName||a.username||a.email});
+      }
+    });
+  });
+  return found;
+}
+function showMentionSuggestions(){
+  const input=document.getElementById('chatInput'), box=document.getElementById('mentionSuggestions'); if(!input||!box)return;
+  const before=input.value.slice(0,input.selectionStart||input.value.length); const m=before.match(/@([^\s@]*)$/);
+  if(!m){box.classList.add('hidden');return;}
+  const q=m[1].toLowerCase();
+  const rows=adminDirectory.filter(a=>[a.displayName,a.username,a.email].some(v=>String(v||'').toLowerCase().includes(q))).slice(0,8);
+  box.innerHTML=rows.map(a=>`<button type="button" onclick="insertMention('${escAttr(a.displayName||a.username||a.email)}')">👤 ${esc(a.displayName||a.username||a.email)}</button>`).join('');
+  box.classList.toggle('hidden',!rows.length);
+}
+function insertMention(name){
+  const input=document.getElementById('chatInput'); if(!input)return;
+  const start=input.selectionStart||input.value.length, before=input.value.slice(0,start), after=input.value.slice(start); const replaced=before.replace(/@([^\s@]*)$/,'@'+name+' '); input.value=replaced+after; input.focus(); input.selectionStart=input.selectionEnd=replaced.length; document.getElementById('mentionSuggestions')?.classList.add('hidden');
+}
+async function sendAdminChat(e){
+  e.preventDefault(); if(!isAdminUser())return;
+  const input=document.getElementById("chatInput"); const message=input.value.trim(); if(!message)return;
+  const mentions=getMentionCandidates(message);
+  try{
+    await db.collection("adminChatMessages").add({message,senderId:currentUserProfile.uid,senderName:currentUserProfile.displayName||currentUserProfile.username||"Admin",senderEmail:currentUserProfile.email||auth.currentUser?.email||"",senderAvatar:currentUserProfile.avatarEmoji||"👤",mentions,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    const mentionIds=mentions.map(x=>x.uid);
+    if(mentionIds.length)await notifyUsers(mentionIds,"มีการ @Mention ถึงคุณใน Admin Chat",`${currentUserProfile.displayName||"Admin"}: ${message}`,{type:'mention',icon:'💬'});
+    input.value=""; document.getElementById('mentionSuggestions')?.classList.add('hidden');
+  }catch(err){console.error(err);toast("ส่งข้อความไม่สำเร็จ: "+(err.code==="permission-denied"?"ตรวจสอบ Firestore Rules":"ลองใหม่"));}
+}
+async function editChatMessage(id){
+  if(!isAdminUser())return;
+  const m=(window.adminChatMessages||[]).find(x=>x.docId===id); if(!m||m.senderId!==currentUserProfile.uid)return toast("แก้ไขได้เฉพาะข้อความของตัวเอง");
+  const next=prompt("แก้ไขข้อความ",m.message||""); if(next===null)return; const message=next.trim(); if(!message)return;
+  const mentions=getMentionCandidates(message);
+  try{await db.collection('adminChatMessages').doc(id).update({message,mentions,editedAt:firebase.firestore.FieldValue.serverTimestamp()}); toast('แก้ไขข้อความแล้ว');}
+  catch(e){console.error(e);toast('แก้ไขข้อความไม่สำเร็จ');}
+}
+async function deleteChatMessage(id){
+  if(!isAdminUser())return;
+  const m=(window.adminChatMessages||[]).find(x=>x.docId===id); if(!m||m.senderId!==currentUserProfile.uid)return toast("ลบได้เฉพาะข้อความของตัวเอง");
+  if(!confirm('ลบข้อความนี้หรือไม่?'))return;
+  try{await db.collection('adminChatMessages').doc(id).delete();toast('ลบข้อความแล้ว');}catch(e){console.error(e);toast('ลบข้อความไม่สำเร็จ');}
+}
+function openChatContextMenu(e,id){
+  e.preventDefault(); const m=(window.adminChatMessages||[]).find(x=>x.docId===id); if(!m)return;
+  if(!m.senderId||m.senderId!==currentUserProfile?.uid)return;
+  closeChatContextMenu();
+  const menu=document.createElement('div'); menu.id='chatContextMenu'; menu.className='chat-context-menu'; menu.style.left=`${Math.min(e.clientX,window.innerWidth-170)}px`; menu.style.top=`${Math.min(e.clientY,window.innerHeight-100)}px`; menu.innerHTML=`<button onclick="editChatMessage('${escAttr(id)}');closeChatContextMenu()">✏️ แก้ไขข้อความ</button><button class="danger-text" onclick="deleteChatMessage('${escAttr(id)}');closeChatContextMenu()">🗑️ ลบข้อความ</button>`; document.body.appendChild(menu); chatContextMenuEl=menu;
+}
+function closeChatContextMenu(){if(chatContextMenuEl){chatContextMenuEl.remove();chatContextMenuEl=null;}}
+document.addEventListener('click',e=>{if(!e.target.closest('#chatContextMenu'))closeChatContextMenu();});
+
+async function loadPlantComments(plantId){
+  const box=document.getElementById(`plantComments_${plantId}`); if(!box)return;
+  try{const snap=await db.collection("plantComments").where("plantId","==",plantId).get(); const rows=snap.docs.map(d=>({docId:d.id,...d.data()})).sort((a,b)=>dateValue(a.createdAt)-dateValue(b.createdAt)); commentCache[plantId]=rows; box.innerHTML=rows.length?rows.map(c=>`<article class="comment-item"><div class="comment-avatar">👤</div><div class="comment-content"><div><strong>${esc(c.authorName||c.authorEmail||"ผู้ใช้")}</strong><small>${esc(formatDate(c.createdAt))}${c.editedAt?' • แก้ไขแล้ว':''}</small></div><p>${esc(c.message||"")}</p>${c.fieldLabel?`<span class="comment-field">จุดที่เกี่ยวข้อง: ${esc(c.fieldLabel)}</span>`:""}${isAdminUser()&&c.authorId===currentUserProfile.uid?`<div class="comment-actions"><button class="btn ghost small" onclick="editPlantComment('${escAttr(c.docId)}','${escAttr(plantId)}')">✏️ แก้ไข</button><button class="btn danger small" onclick="deletePlantComment('${escAttr(c.docId)}','${escAttr(plantId)}')">🗑️ ลบ</button></div>`:''}</div></article>`).join(''):'<div class="empty-state">ยังไม่มีความคิดเห็นสำหรับข้อมูลนี้</div>';}catch(e){console.error(e);box.innerHTML='<div class="empty-state">โหลดความคิดเห็นไม่สำเร็จ</div>';}
+}
+async function addPlantComment(e,plantId){
+  e.preventDefault(); if(!isAdminUser())return;
+  const input=document.getElementById(`commentInput_${plantId}`); const message=input?.value.trim(); if(!message)return;
+  const p=plants.find(x=>x.id===plantId); if(!p)return;
+  try{
+    const ref=await db.collection("plantComments").add({plantId,plantName:p.thaiName||"",ownerId:p.createdBy||"",authorId:currentUserProfile.uid,authorName:currentUserProfile.displayName||currentUserProfile.username||"Admin",authorEmail:currentUserProfile.email||"",message,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    await logActivity("comment",p);
+    await notifyAllAdmins("มีความคิดเห็นใหม่ในข้อมูลพืช",`${currentUserProfile.displayName||'Admin'} แสดงความคิดเห็นใน ${plantId} • ${message}`,{plantId,type:'comment',icon:'💬'});
+    input.value=""; await loadPlantComments(plantId); toast("เพิ่มความคิดเห็นแล้ว");
+  }catch(err){console.error(err);toast("เพิ่มความคิดเห็นไม่สำเร็จ: "+(err.code==='permission-denied'?'ตรวจสอบ Firestore Rules':'ลองใหม่'));}
+}
+async function editPlantComment(id,plantId){
+  if(!isAdminUser())return;
+  const c=(commentCache[plantId]||[]).find(x=>x.docId===id); if(!c||c.authorId!==currentUserProfile.uid)return toast('แก้ไขได้เฉพาะความคิดเห็นของตัวเอง');
+  const message=prompt('แก้ไขความคิดเห็น',c.message||''); if(message===null)return; const text=message.trim(); if(!text)return;
+  try{await db.collection('plantComments').doc(id).update({message:text,editedAt:firebase.firestore.FieldValue.serverTimestamp()}); const p=plants.find(x=>x.id===plantId); if(p){await logActivity('comment_edit',p);await notifyAllAdmins('มีการแก้ไขความคิดเห็น',`${currentUserProfile.displayName||'Admin'} แก้ไขความคิดเห็นใน ${plantId}`,{plantId,type:'comment_edit',icon:'✏️'});} await loadPlantComments(plantId);toast('แก้ไขความคิดเห็นแล้ว');}catch(e){console.error(e);toast('แก้ไขความคิดเห็นไม่สำเร็จ');}
+}
+async function deletePlantComment(id,plantId){
+  if(!isAdminUser())return;
+  const c=(commentCache[plantId]||[]).find(x=>x.docId===id); if(!c||c.authorId!==currentUserProfile.uid)return toast('ลบได้เฉพาะความคิดเห็นของตัวเอง');
+  if(!confirm('ลบความคิดเห็นนี้หรือไม่?'))return;
+  try{await db.collection('plantComments').doc(id).delete(); const p=plants.find(x=>x.id===plantId); if(p){await logActivity('comment_delete',p);await notifyAllAdmins('ความคิดเห็นถูกลบ',`${currentUserProfile.displayName||'Admin'} ลบความคิดเห็นใน ${plantId}`,{plantId,type:'comment_delete',icon:'🗑️'});} await loadPlantComments(plantId);toast('ลบความคิดเห็นแล้ว');}catch(e){console.error(e);toast('ลบความคิดเห็นไม่สำเร็จ');}
+}
+
+async function openTaskComposer(plantId="",taskId=""){
+  if(!isAdminUser()){toast("ฟังก์ชันนี้สำหรับ Admin");return;}
+  await loadAdminDirectory();
+  const existing=taskId?(window.adminTasks||[]).find(x=>x.docId===taskId):null;
+  if(existing && existing.createdBy!==currentUserProfile.uid){toast('แก้ไขได้เฉพาะผู้ที่ปักหมุดงานนี้');return;}
+  const p=plantId?plants.find(x=>x.id===plantId):existing?plants.find(x=>x.id===existing.plantId):null;
+  const fields=FIELDS.flatMap(([section,fs])=>fs.map(([key,label])=>({key,label,section})));
+  const ownerAdmin=p&&adminDirectory.some(a=>a.uid===p.createdBy)?p.createdBy:"";
+  const data=existing||{};
+  document.getElementById("modalRoot").innerHTML=`<div class="modal-backdrop" onclick="closeModal(event)"><div class="modal task-modal" onclick="event.stopPropagation()"><div class="modal-head"><div><span class="eyebrow">PINNED WORK</span><h2>📌 ${existing?'แก้ไขงานปักหมุด':'ปักหมุดงานแก้ไข'}</h2><p class="modal-subtitle">ระบุจุดที่ต้องแก้และส่งต่อให้ Admin คนอื่นทำต่อ</p></div><button class="icon-btn" onclick="closeModal()">×</button></div><div class="task-form-grid"><label>ข้อมูลพืช<select id="taskPlant">${plants.filter(x=>!x.isDeleted).map(x=>`<option value="${escAttr(x.id)}" ${x.id===(data.plantId||plantId)?'selected':''}>${esc(x.id)} — ${esc(x.thaiName||"ไม่ระบุ")}</option>`).join("")}</select></label><label>จุดที่ต้องแก้<select id="taskField"><option value="">ทั้งรายการ</option>${fields.map(f=>`<option value="${escAttr(f.key)}" ${f.key===(data.fieldKey||'')?'selected':''}>${esc(f.label)}</option>`).join("")}</select></label><label>มอบหมายให้ Admin<select id="taskAssignee">${adminDirectory.map(a=>`<option value="${escAttr(a.uid)}" ${a.uid===(data.assigneeId||ownerAdmin)?'selected':''}>${esc(a.displayName||a.username||a.email||"Admin")}</option>`).join("")}</select></label><label class="full">หมายเหตุ / สิ่งที่ควรแก้<textarea id="taskNote" rows="5" maxlength="2000" placeholder="เช่น ตรวจสอบแหล่งอ้างอิงส่วนความเชื่อ และเติมข้อมูลความเป็นพิษต่อแมว">${esc(data.note||'')}</textarea></label></div><div class="form-actions"><button class="btn ghost" onclick="closeModal()">ยกเลิก</button><button class="btn primary" onclick="${existing?'updateFixTask':'createFixTask'}('${existing?escAttr(existing.docId):''}')">${existing?'บันทึกการแก้ไข':'📌 ปักหมุดและแจ้ง Admin'}</button></div></div></div>`;
+}
+async function createFixTask(){
+  const plantId=document.getElementById("taskPlant")?.value; const fieldKey=document.getElementById("taskField")?.value||""; const assigneeId=document.getElementById("taskAssignee")?.value; const note=document.getElementById("taskNote")?.value.trim();
+  const p=plants.find(x=>x.id===plantId); if(!p||!assigneeId||!note){toast("กรุณากรอกข้อมูลให้ครบ");return;}
+  const fieldLabel=fieldLabelMap()[fieldKey]||"ทั้งรายการ"; const assignee=adminDirectory.find(a=>a.uid===assigneeId);
+  try{const ref=await db.collection("adminTasks").add({plantId,plantName:p.thaiName||"",fieldKey,fieldLabel,note,assigneeId,assigneeName:assignee?.displayName||assignee?.username||assignee?.email||"Admin",createdBy:currentUserProfile.uid,createdByName:currentUserProfile.displayName||currentUserProfile.username||"Admin",status:"in_progress",pinned:true,createdAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()}); await logActivity("task_create",p); await notifyAllAdmins("มีงานปักหมุดใหม่",`${currentUserProfile.displayName||'Admin'} ปักหมุด ${plantId} ให้ ${assignee?.displayName||'Admin'} • ${fieldLabel}`,{plantId,taskId:ref.id,type:'task_create',icon:'📌'}); if(assigneeId!==currentUserProfile.uid)await notifyUsers([assigneeId],"มีงานปักหมุดมอบหมายถึงคุณ",`${plantId} • ${fieldLabel} • ${note}`,{plantId,taskId:ref.id,type:'task_assigned',icon:'📌'}); closeModal(); toast("ปักหมุดงานและแจ้งทีมแล้ว");}
+  catch(err){console.error(err);toast("สร้างงานไม่สำเร็จ: "+(err.code==="permission-denied"?"ตรวจสอบ Firestore Rules":"ลองใหม่"));}
+}
+async function updateFixTask(id){
+  if(!isAdminUser())return; const task=(window.adminTasks||[]).find(x=>x.docId===id); if(!task||task.createdBy!==currentUserProfile.uid){toast('แก้ไขได้เฉพาะผู้ปักหมุด');return;}
+  const plantId=document.getElementById('taskPlant')?.value, fieldKey=document.getElementById('taskField')?.value||'', assigneeId=document.getElementById('taskAssignee')?.value, note=document.getElementById('taskNote')?.value.trim(); const p=plants.find(x=>x.id===plantId); if(!p||!assigneeId||!note)return toast('กรุณากรอกข้อมูลให้ครบ'); const assignee=adminDirectory.find(a=>a.uid===assigneeId); const fieldLabel=fieldLabelMap()[fieldKey]||'ทั้งรายการ';
+  try{await db.collection('adminTasks').doc(id).update({plantId,plantName:p.thaiName||'',fieldKey,fieldLabel,note,assigneeId,assigneeName:assignee?.displayName||assignee?.username||assignee?.email||'Admin',updatedAt:firebase.firestore.FieldValue.serverTimestamp()}); await logActivity('task_edit',p); await notifyAllAdmins('มีการแก้ไขงานปักหมุด',`${currentUserProfile.displayName||'Admin'} แก้ไขงาน ${plantId} • ${fieldLabel}`,{plantId,taskId:id,type:'task_edit',icon:'✏️'}); closeModal();toast('แก้ไขงานปักหมุดแล้ว');}catch(e){console.error(e);toast('แก้ไขงานปักหมุดไม่สำเร็จ');}
+}
+async function deleteFixTask(id){
+  if(!isAdminUser())return; const task=(window.adminTasks||[]).find(x=>x.docId===id); if(!task||task.createdBy!==currentUserProfile.uid){toast('ลบได้เฉพาะผู้ปักหมุด');return;} if(!confirm('ลบการปักหมุดนี้หรือไม่?'))return;
+  try{await db.collection('adminTasks').doc(id).delete(); const p=plants.find(x=>x.id===task.plantId); if(p){await logActivity('task_delete',p);await notifyAllAdmins('มีการลบงานปักหมุด',`${currentUserProfile.displayName||'Admin'} ลบงาน ${task.plantId} • ${task.fieldLabel||'ทั้งรายการ'}`,{plantId:task.plantId,taskId:id,type:'task_delete',icon:'🗑️'});} toast('ลบการปักหมุดแล้ว');}catch(e){console.error(e);toast('ลบการปักหมุดไม่สำเร็จ');}
+}
+function subscribeTasks(){
+  if(taskUnsubscribe)taskUnsubscribe(); if(!currentUserProfile?.uid || !isAdminUser())return;
+  taskUnsubscribe=db.collection("adminTasks").limit(100).onSnapshot(s=>{window.adminTasks=s.docs.map(d=>({docId:d.id,...d.data()})); renderDashboardTasks();},e=>console.warn("tasks",e));
+}
+function renderDashboardTasks(){
+  const box=document.getElementById("dashboardTasks"); if(!box)return; const rows=(window.adminTasks||[]).slice(0,20);
+  box.innerHTML=rows.length?rows.map(t=>{const mine=t.assigneeId===currentUserProfile?.uid, creator=t.createdBy===currentUserProfile?.uid, done=t.status==='completed'; return `<article class="task-card ${done?'task-done':''}"><div class="task-pin">📌</div><div><strong>${esc(t.plantId)} • ${esc(t.plantName||"")}</strong><span>${esc(t.fieldLabel||"ทั้งรายการ")} • มอบหมายให้ ${esc(t.assigneeName||"Admin")}</span><p>${esc(t.note||"")}</p><small>ปักหมุดโดย ${esc(t.createdByName||"Admin")} • ${esc(formatDate(t.createdAt))}</small><div class="task-status ${done?'done':'progress'}">${done?'🟢 สำเร็จ':'🟡 กำลังดำเนินการ'}</div></div><div class="task-actions"><button class="btn ghost" onclick="viewPlant('${escAttr(t.plantId)}')">เปิดข้อมูล</button>${creator?`<button class="btn ghost small" onclick="openTaskComposer('', '${escAttr(t.docId)}')">✏️ แก้ไข</button><button class="btn danger small" onclick="deleteFixTask('${escAttr(t.docId)}')">🗑️ ลบ</button>`:''}${mine&&!done?`<button class="btn primary" onclick="completeTask('${escAttr(t.docId)}')">✓ ทำสำเร็จ</button>`:''}</div></article>`;}).join(''):'<div class="empty-state">ยังไม่มีงานที่ปักหมุด</div>';
+}
+async function completeTask(id){
+  if(!isAdminUser())return; const task=(window.adminTasks||[]).find(x=>x.docId===id); if(!task||task.assigneeId!==currentUserProfile.uid){toast('เฉพาะ Admin ที่ถูกมอบหมายเท่านั้นที่กดสำเร็จได้');return;} if(task.status==='completed')return;
+  try{await db.collection("adminTasks").doc(id).update({status:"completed",completedBy:currentUserProfile.uid,completedByName:currentUserProfile.displayName||currentUserProfile.username||"Admin",completedAt:firebase.firestore.FieldValue.serverTimestamp(),updatedAt:firebase.firestore.FieldValue.serverTimestamp()}); const p=plants.find(x=>x.id===task.plantId); if(p)await logActivity("task_complete",p); await notifyAllAdmins("งานปักหมุดสำเร็จ",`${currentUserProfile.displayName||'Admin'} ทำงาน ${task.plantId} สำเร็จแล้ว`,{plantId:task.plantId,taskId:id,type:'task_complete',icon:'✅'}); toast("ปิดงานที่ปักหมุดแล้ว");}catch(e){console.error(e);toast("ปิดงานไม่สำเร็จ");}
+}
+function openTaskBoard(){showPage("home");}
+function activityActionLabel(action){
+  return ({create:"เพิ่มข้อมูลพืช",update:"แก้ไขข้อมูลพืช",permanent_delete:"ลบข้อมูลถาวร",restore:"กู้คืนข้อมูลจากถังขยะ",delete_request:"ส่งคำขอลบข้อมูล",comment:"แสดงความคิดเห็น",comment_edit:"แก้ไขความคิดเห็น",comment_delete:"ลบความคิดเห็น",task_create:"สร้างงานปักหมุด",task_edit:"แก้ไขงานปักหมุด",task_delete:"ลบงานปักหมุด",task_complete:"ทำงานปักหมุดสำเร็จ"}[action]||action||"ทำรายการ");
+}
+function activityActionIcon(action){
+  return ({create:"🌱",update:"✏️",permanent_delete:"🗑️",restore:"♻️",delete_request:"📨",comment:"💬",comment_edit:"✏️",comment_delete:"🗑️",task_create:"📌",task_edit:"✏️",task_delete:"🗑️",task_complete:"✅"}[action]||"•");
+}
+function subscribeActivityLogs(){
+  if(activityUnsubscribe)activityUnsubscribe();
+  if(!currentUserProfile?.uid || !isAdminUser())return;
+  activityUnsubscribe=db.collection("activityLogs").orderBy("createdAt","desc").limit(30).onSnapshot(s=>{window.teamActivityLogs=s.docs.map(d=>({docId:d.id,...d.data()}));renderTeamActivity();},e=>{console.warn("activity logs",e);renderTeamActivity();});
+}
+function renderTeamActivity(){
+  const box=document.getElementById("dashboardTeamActivity");if(!box)return;
+  const rows=(window.teamActivityLogs||[]).slice(0,8);
+  box.innerHTML=rows.length?rows.map(r=>`<article class="team-activity-item"><span class="team-activity-icon">${activityActionIcon(r.action)}</span><div class="team-activity-main"><strong>${esc(r.userName||r.userEmail||"Admin")}</strong><span>${esc(activityActionLabel(r.action))}${r.plantId?` • ${esc(r.plantId)}`:""}</span><small>${esc(formatDate(r.createdAt))}</small></div></article>`).join(""):'<div class="empty-state team-activity-empty">ยังไม่มีกิจกรรมของทีม</div>';
+}
+function openActivityLog(){
+  if(!isAdminUser())return;
+  const rows=(window.teamActivityLogs||[]);
+  document.getElementById("modalRoot").innerHTML=`<div class="modal-backdrop" onclick="closeModal(event)"><div class="modal activity-modal" onclick="event.stopPropagation()"><div class="modal-head"><div><span class="eyebrow">TEAM ACTIVITY</span><h2>📋 กิจกรรมของทีม</h2><p class="modal-subtitle">รายการการทำงานล่าสุดของ Admin</p></div><button class="icon-btn" onclick="closeModal()">×</button></div><div class="activity-full-list">${rows.length?rows.map(r=>`<article class="team-activity-item"><span class="team-activity-icon">${activityActionIcon(r.action)}</span><div class="team-activity-main"><strong>${esc(r.userName||r.userEmail||"Admin")}</strong><span>${esc(activityActionLabel(r.action))}${r.plantId?` • ${esc(r.plantId)}`:""}</span><small>${esc(formatDate(r.createdAt))}</small></div></article>`).join(""):'<div class="empty-state">ยังไม่มีกิจกรรมของทีม</div>'}</div></div></div>`;
+}
+function renderDashboard(){
+  const stats=document.getElementById("dashboardStats"); if(!stats)return;
+  const active=plants.filter(p=>!p.isDeleted).length;
+  const trash=plants.filter(p=>p.isDeleted).length;
+  const my=plants.filter(p=>p.createdBy===currentUserProfile?.uid&&!p.isDeleted).length;
+  const unread=window.userNotifications?.filter(n=>!n.read).length ?? 0;
+  stats.innerHTML=`
+    <div class="dash-stat"><span>🌱</span><strong>${active}</strong><small>ข้อมูลใช้งาน</small></div>
+    <div class="dash-stat"><span>🔔</span><strong>${unread}</strong><small>แจ้งเตือนที่ยังไม่อ่าน</small></div>
+    <div class="dash-stat"><span>📝</span><strong>${my}</strong><small>ข้อมูลที่ฉันลงแล้ว</small></div>
+    <div class="dash-stat"><span>🗑️</span><strong>${trash}</strong><small>ข้อมูลในถังขยะ</small></div>`;
+  const latest=drafts?.[0];
+  const hint=document.getElementById("dashboardDraftHint");
+  if(hint) hint.textContent=latest
+    ? `${latest.draftName||latest.data?.thaiName||"Draft ล่าสุด"} • ${formatDate(latest.updatedAt)}`
+    : "ยังไม่มี Draft ของคุณ";
+}
+
+function continueLatestDraft(){
+  if(!isAdminUser())return;
+  if(!drafts?.length){
+    showPage("entry");
+    toast("ยังไม่มี Draft ล่าสุด กรุณาเริ่มกรอกข้อมูลใหม่");
+    return;
+  }
+  continueDraft(drafts[0].docId);
 }
 
 function fieldLabelMap(){const m={};FIELDS.forEach(([s,fs])=>fs.forEach(([k,l])=>m[k]=l));return m}
